@@ -32,3 +32,4 @@ credentials.json
 # Temporary
 *.tmp
 scrp_news.zip
+Data/notify_config.json
