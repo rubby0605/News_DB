@@ -33,3 +33,4 @@ credentials.json
 *.tmp
 scrp_news.zip
 Data/notify_config.json
+Data/openai_config.json
