@@ -52,6 +52,54 @@ logger = logging.getLogger(__name__)
 NEWS_DATA_DIR = os.path.join(SCRIPT_DIR, 'news_data')
 os.makedirs(NEWS_DATA_DIR, exist_ok=True)
 
+# 已抓取新聞的記錄檔
+SEEN_NEWS_FILE = os.path.join(NEWS_DATA_DIR, 'seen_news.json')
+
+
+def get_news_hash(title):
+    """計算新聞標題的 hash 值"""
+    # 清理並標準化標題
+    clean_title = re.sub(r'\s+', '', str(title).lower())
+    return hashlib.md5(clean_title.encode('utf-8')).hexdigest()[:16]
+
+
+def load_seen_news():
+    """載入已抓取的新聞記錄"""
+    if os.path.exists(SEEN_NEWS_FILE):
+        try:
+            with open(SEEN_NEWS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {'hashes': set(), 'count': 0}
+
+
+def save_seen_news(seen_data):
+    """儲存已抓取的新聞記錄"""
+    # 轉換 set 為 list 以便 JSON 序列化
+    save_data = {
+        'hashes': list(seen_data['hashes']),
+        'count': seen_data['count'],
+        'last_updated': str(datetime.datetime.now())
+    }
+    with open(SEEN_NEWS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(save_data, f, ensure_ascii=False, indent=2)
+
+
+def is_news_seen(title, seen_data):
+    """檢查新聞是否已經抓取過"""
+    news_hash = get_news_hash(title)
+    return news_hash in seen_data['hashes']
+
+
+def mark_news_seen(title, seen_data):
+    """標記新聞為已抓取"""
+    news_hash = get_news_hash(title)
+    if isinstance(seen_data['hashes'], list):
+        seen_data['hashes'] = set(seen_data['hashes'])
+    seen_data['hashes'].add(news_hash)
+    seen_data['count'] += 1
+
 
 def clean_text(text):
     """清理新聞文字"""
@@ -183,8 +231,15 @@ def get_stock_price_change(stock_code, date_str):
         return None, None, None
 
 
-def collect_news_for_stock(stock_name, stock_code):
-    """收集單一股票的新聞"""
+def collect_news_for_stock(stock_name, stock_code, seen_data=None):
+    """
+    收集單一股票的新聞
+
+    Args:
+        stock_name: 股票名稱
+        stock_code: 股票代號
+        seen_data: 已抓取新聞記錄（用於去重）
+    """
     all_news = []
 
     # 用股票名稱搜尋
@@ -201,14 +256,32 @@ def collect_news_for_stock(stock_name, stock_code):
         all_news.extend(news)
         time.sleep(random.uniform(1, 2))
 
-    # 去重
-    seen = set()
+    # 去重（包含歷史去重）
+    seen_titles = set()
     unique_news = []
+    skipped_count = 0
+
     for item in all_news:
         title = item['title']
-        if title not in seen:
-            seen.add(title)
-            unique_news.append(item)
+
+        # 檢查是否在本次收集中重複
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+
+        # 檢查是否已經抓取過（歷史去重）
+        if seen_data and is_news_seen(title, seen_data):
+            skipped_count += 1
+            continue
+
+        # 標記為已抓取
+        if seen_data:
+            mark_news_seen(title, seen_data)
+
+        unique_news.append(item)
+
+    if skipped_count > 0:
+        logger.info(f"  跳過 {skipped_count} 則已抓取的新聞")
 
     return unique_news
 
@@ -281,11 +354,17 @@ def save_daily_news(news_data, stock_prices):
 
 
 def collect_all_news():
-    """主函式：收集所有關注股票的新聞"""
+    """主函式：收集所有關注股票的新聞（自動去重）"""
     logger.info("=" * 50)
     logger.info("開始收集新聞資料")
     logger.info(f"日期: {datetime.date.today()}")
     logger.info("=" * 50)
+
+    # 載入已抓取新聞記錄
+    seen_data = load_seen_news()
+    if isinstance(seen_data['hashes'], list):
+        seen_data['hashes'] = set(seen_data['hashes'])
+    logger.info(f"已記錄 {len(seen_data['hashes'])} 則歷史新聞")
 
     # 讀取股票清單
     stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
@@ -303,10 +382,10 @@ def collect_all_news():
     for i, (stock_name, stock_code) in enumerate(dict_stock.items(), 1):
         logger.info(f"[{i}/{total}] 處理: {stock_name} ({stock_code})")
 
-        # 收集新聞
-        news = collect_news_for_stock(stock_name, stock_code)
+        # 收集新聞（傳入 seen_data 進行去重）
+        news = collect_news_for_stock(stock_name, stock_code, seen_data)
         all_news.extend(news)
-        logger.info(f"  找到 {len(news)} 則新聞")
+        logger.info(f"  找到 {len(news)} 則新新聞")
 
         # 取得股價
         close, change, change_pct = get_stock_price_change(stock_code, date_str)
@@ -321,12 +400,16 @@ def collect_all_news():
         # 避免請求過快
         time.sleep(random.uniform(2, 4))
 
+    # 儲存已抓取新聞記錄
+    save_seen_news(seen_data)
+    logger.info(f"已更新新聞記錄，目前共 {len(seen_data['hashes'])} 則")
+
     # 儲存資料
     if all_news:
         csv_file = save_daily_news(all_news, stock_prices)
-        logger.info(f"總共收集 {len(all_news)} 則新聞")
+        logger.info(f"總共收集 {len(all_news)} 則新新聞")
     else:
-        logger.warning("沒有收集到任何新聞")
+        logger.warning("沒有收集到新的新聞（可能都已抓取過）")
 
     logger.info("新聞收集完成")
     return all_news, stock_prices
