@@ -606,7 +606,75 @@ def main():
     except Exception as e:
         logger.error(f"發送每日報告失敗: {e}")
 
+    # 7. 每週一自動優化權重
+    if now.weekday() == 0:  # 週一
+        try:
+            logger.info("=== 每週權重優化 ===")
+            run_weekly_optimization()
+        except Exception as e:
+            logger.error(f"權重優化失敗: {e}")
+
     logger.info("今日任務完成")
+
+
+def run_weekly_optimization():
+    """每週執行權重優化"""
+    from optimize_weights import prepare_test_data, genetic_algorithm, save_weights
+    from newslib import read_stock_list
+
+    logger.info("開始遺傳演算法優化...")
+
+    # 讀取股票清單
+    stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+    dict_stock = read_stock_list(stock_list_file)
+
+    # 選擇測試股票
+    test_stocks = ['2330', '3189', '2454', '2881', '2603']
+
+    # 計算月份
+    today = datetime.date.today()
+    months = []
+    for i in range(2):
+        target_month = today.month - i - 1
+        target_year = today.year
+        if target_month <= 0:
+            target_month += 12
+            target_year -= 1
+        months.append(f'{target_year}{target_month:02d}')
+
+    # 準備資料
+    test_data = prepare_test_data(test_stocks, months)
+
+    if not test_data:
+        logger.warning("無測試資料，跳過優化")
+        return
+
+    # 遺傳演算法優化
+    best_weights, best_accuracy, history = genetic_algorithm(
+        test_data,
+        population_size=30,
+        generations=20,
+        mutation_rate=0.2
+    )
+
+    # 儲存權重
+    save_weights(best_weights, best_accuracy)
+
+    # 發送結果到 Discord
+    message = f'''**🧬 每週權重優化完成**
+
+**🏆 準確率: {best_accuracy:.1%}**
+
+**優化後權重:**
+• 外資大量門檻: {best_weights['foreign_large']} 張
+• 外資中量門檻: {best_weights['foreign_medium']} 張
+• 外資權重: {best_weights['foreign_weight']:.2f}
+• 動量權重: {best_weights['momentum_weight']:.2f}
+• 均線權重: {best_weights['ema_weight']:.2f}
+
+下週預測將使用新權重'''
+
+    send_discord(message, title='週一權重優化')
 
 
 if __name__ == "__main__":

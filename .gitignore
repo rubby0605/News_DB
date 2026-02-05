@@ -34,3 +34,4 @@ credentials.json
 scrp_news.zip
 Data/notify_config.json
 Data/openai_config.json
+Data/optimized_weights.json

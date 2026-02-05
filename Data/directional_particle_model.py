@@ -9,6 +9,7 @@
 
 import math
 import random
+import json
 import numpy as np
 import pandas as pd
 import requests
@@ -255,44 +256,73 @@ def calc_volatility(prices, days=10):
 
 
 # ============================================================
+# 權重載入
+# ============================================================
+
+WEIGHTS_FILE = os.path.join(SCRIPT_DIR, 'optimized_weights.json')
+
+def load_optimized_weights():
+    """載入優化後的權重"""
+    default_weights = {
+        'foreign_large': 3000,
+        'foreign_medium': 1000,
+        'foreign_weight': 4,
+        'momentum_weight': 2,
+        'ema_weight': 2,
+        'momentum_threshold': 3
+    }
+
+    if os.path.exists(WEIGHTS_FILE):
+        try:
+            with open(WEIGHTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                weights = data.get('weights', default_weights)
+                print(f"使用優化權重 (準確率: {data.get('accuracy', 0):.1%})")
+                return weights
+        except:
+            pass
+
+    print("使用預設權重")
+    return default_weights
+
+
+# ============================================================
 # 方向偏移計算
 # ============================================================
 
-def calc_directional_bias(stock_code, institutional_data, history):
+def calc_directional_bias(stock_code, institutional_data, history, weights=None):
     """
-    計算方向偏移量
-
-    綜合考慮：
-    - 法人買賣超 (40%)
-    - 價格動量 (30%)
-    - 均線排列 (20%)
-    - RSI 指標 (10%)
+    計算方向偏移量（使用優化權重）
 
     Returns:
         float: 偏移量 (-10 到 +10)
         dict: 詳細信號
     """
+    # 載入權重
+    if weights is None:
+        weights = load_optimized_weights()
+
     bias = 0
     signals = {}
 
-    # 1. 法人買賣超 (權重 40%)
+    # 1. 法人買賣超
     if stock_code in institutional_data:
         inst = institutional_data[stock_code]
         foreign = inst['foreign']
         total = inst['total']
 
-        # 外資影響最大
-        if foreign > 3000:
-            bias += 4
+        # 使用優化後的門檻和權重
+        if foreign > weights['foreign_large']:
+            bias += weights['foreign_weight']
             signals['foreign'] = f'外資大買 +{foreign} 張'
-        elif foreign > 1000:
-            bias += 2
+        elif foreign > weights['foreign_medium']:
+            bias += weights['foreign_weight'] * 0.5
             signals['foreign'] = f'外資買超 +{foreign} 張'
-        elif foreign < -3000:
-            bias -= 4
+        elif foreign < -weights['foreign_large']:
+            bias -= weights['foreign_weight']
             signals['foreign'] = f'外資大賣 {foreign} 張'
-        elif foreign < -1000:
-            bias -= 2
+        elif foreign < -weights['foreign_medium']:
+            bias -= weights['foreign_weight'] * 0.5
             signals['foreign'] = f'外資賣超 {foreign} 張'
         else:
             signals['foreign'] = f'外資 {foreign:+d} 張 (中性)'
@@ -305,32 +335,32 @@ def calc_directional_bias(stock_code, institutional_data, history):
     else:
         signals['foreign'] = '無法人資料'
 
-    # 2. 價格動量 (權重 30%)
+    # 2. 價格動量
     if history:
         closes = [d['close'] for d in history]
 
         momentum_5d = calc_momentum(closes, 5)
         momentum_10d = calc_momentum(closes, 10)
 
-        # 5日動量
-        if momentum_5d > 5:
-            bias += 2
-        elif momentum_5d > 2:
-            bias += 1
-        elif momentum_5d < -5:
-            bias -= 2
-        elif momentum_5d < -2:
-            bias -= 1
+        # 使用優化後的動量權重和門檻
+        if momentum_5d > weights['momentum_threshold'] * 2:
+            bias += weights['momentum_weight']
+        elif momentum_5d > weights['momentum_threshold']:
+            bias += weights['momentum_weight'] * 0.5
+        elif momentum_5d < -weights['momentum_threshold'] * 2:
+            bias -= weights['momentum_weight']
+        elif momentum_5d < -weights['momentum_threshold']:
+            bias -= weights['momentum_weight'] * 0.5
 
         signals['momentum'] = f'5日動量 {momentum_5d:+.1f}%'
 
         # 10日動量加成
         if momentum_10d > 10:
-            bias += 1
+            bias += 0.5
         elif momentum_10d < -10:
-            bias -= 1
+            bias -= 0.5
 
-    # 3. 均線排列 (權重 20%)
+    # 3. 均線排列
     if history and len(history) >= 20:
         closes = [d['close'] for d in history]
 
@@ -339,19 +369,19 @@ def calc_directional_bias(stock_code, institutional_data, history):
         ema20 = calc_ema(closes, 20)
         current = closes[-1]
 
-        # 多頭排列: 股價 > EMA5 > EMA10 > EMA20
+        # 多頭排列: 股價 > EMA5 > EMA10 > EMA20（使用優化後的均線權重）
         if current > ema5 > ema10 > ema20:
-            bias += 2
+            bias += weights['ema_weight']
             signals['ema'] = '多頭排列'
         elif current > ema5 > ema10:
-            bias += 1
+            bias += weights['ema_weight'] * 0.5
             signals['ema'] = '短多排列'
         # 空頭排列: 股價 < EMA5 < EMA10 < EMA20
         elif current < ema5 < ema10 < ema20:
-            bias -= 2
+            bias -= weights['ema_weight']
             signals['ema'] = '空頭排列'
         elif current < ema5 < ema10:
-            bias -= 1
+            bias -= weights['ema_weight'] * 0.5
             signals['ema'] = '短空排列'
         else:
             signals['ema'] = '均線糾結'
