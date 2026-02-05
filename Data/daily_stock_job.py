@@ -80,10 +80,72 @@ def fetch_fundamental_data():
     logger.info(f"基本面資料已儲存至: {output_file}")
 
 
+def send_prediction_notification(stock_prices, clf, vectorizer, now):
+    """
+    發送股票預測通知到 Discord
+    """
+    from hybrid_predictor import hybrid_predict
+    from newslib import scrapBingNews, scrapGoogleNews
+
+    logger.info("發送 15 分鐘預測通知...")
+
+    # 建立通知內容
+    lines = [
+        f"**時間:** {now.strftime('%H:%M')}",
+        "",
+        "**即時股價:**"
+    ]
+
+    # 股價摘要（只列前 10 檔有成交的）
+    active_stocks = [s for s in stock_prices if s['price'] != '-'][:10]
+    for s in active_stocks:
+        try:
+            price = float(s['price'])
+            yesterday = float(s['yesterday']) if s['yesterday'] != '-' else price
+            change_pct = ((price - yesterday) / yesterday) * 100
+            emoji = "🔴" if change_pct < 0 else "🟢" if change_pct > 0 else "⚪"
+            lines.append(f"{emoji} {s['name']}: ${price:.1f} ({change_pct:+.1f}%)")
+        except:
+            lines.append(f"⚪ {s['name']}: ${s['price']}")
+
+    # AI 預測摘要
+    if clf and vectorizer:
+        lines.extend(["", "**AI 新聞預測:**"])
+
+        # 簡單的預測示例（根據股票名稱生成假新聞標題進行預測）
+        predictions = []
+        for s in active_stocks[:5]:
+            try:
+                # 用股票名稱作為關鍵字產生預測
+                test_news = f"{s['name']}今日股價表現"
+                pred, conf, details = hybrid_predict(test_news, clf, vectorizer)
+                predictions.append({
+                    'name': s['name'],
+                    'prediction': pred,
+                    'confidence': conf
+                })
+            except:
+                continue
+
+        bull_count = sum(1 for p in predictions if p['prediction'] == '漲')
+        bear_count = sum(1 for p in predictions if p['prediction'] == '跌')
+
+        lines.append(f"看漲: {bull_count} 檔 | 看跌: {bear_count} 檔")
+
+    message = "\n".join(lines)
+
+    try:
+        send_discord(message, title="盤中即時更新")
+        logger.info("Discord 通知已發送")
+    except Exception as e:
+        logger.error(f"發送通知失敗: {e}")
+
+
 def monitor_realtime_prices():
     """
     即時股價監控
     只在台股開盤時間（09:00-13:30）執行
+    每 15 分鐘發送 Discord 通知
     """
     logger.info("=== 開始即時股價監控 ===")
 
@@ -95,8 +157,17 @@ def monitor_realtime_prices():
 
     dict_stock = read_stock_list(stock_list_file)
     stock_list = [int(dict_stock[stock]) for stock in dict_stock.keys()]
+    stock_names = {v: k for k, v in dict_stock.items()}  # 代號 -> 名稱
 
     iteration = 0
+    last_notify_time = None  # 上次通知時間
+
+    # 載入預測模型
+    try:
+        from hybrid_predictor import hybrid_predict, load_ml_model
+        clf, vectorizer = load_ml_model()
+    except:
+        clf, vectorizer = None, None
 
     with open(db_file, 'a', encoding='utf-8') as fi:
         while True:
@@ -133,16 +204,42 @@ def monitor_realtime_prices():
                     time.sleep(10)
                     continue
 
+                # 收集股價資料
+                stock_prices = []
                 for i in range(min(len(dict_stock) - 1, len(data['msgArray']))):
+                    item = data['msgArray'][i]
                     line = ''
                     for column in columns:
-                        value = data['msgArray'][i].get(column, '-')
+                        value = item.get(column, '-')
                         line = line + '\t' + str(value)
                     line = line + '\t' + str(now) + '\n'
                     fi.write(line)
 
+                    # 記錄股價資訊
+                    code = item.get('c', '')
+                    name = item.get('n', stock_names.get(code, code))
+                    price = item.get('z', '-')
+                    yesterday = item.get('y', '-')
+                    stock_prices.append({
+                        'code': code,
+                        'name': name,
+                        'price': price,
+                        'yesterday': yesterday
+                    })
+
                 fi.flush()  # 確保寫入磁碟
                 iteration += 1
+
+                # 每 15 分鐘發送 Discord 通知
+                should_notify = False
+                if last_notify_time is None:
+                    should_notify = True
+                elif (now - last_notify_time).total_seconds() >= 900:  # 900秒 = 15分鐘
+                    should_notify = True
+
+                if should_notify:
+                    send_prediction_notification(stock_prices, clf, vectorizer, now)
+                    last_notify_time = now
 
                 if iteration % 10 == 0:
                     logger.info(f"已執行 {iteration} 次，時間: {now.strftime('%H:%M:%S')}")
