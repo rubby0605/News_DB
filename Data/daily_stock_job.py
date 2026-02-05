@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 每日股票資料自動抓取排程
-- 08:00 執行基本面資料抓取
+- 08:00 盤前分析（粒子模型預測）
 - 09:00-13:30 即時股價監控（盤中）
-- 13:30 自動停止
+- 13:30 盤後誤差分析
 
 @author: rubylintu
 """
@@ -43,6 +43,215 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# 儲存盤前預測結果（供盤後比較）
+PREMARKET_PREDICTIONS = {}
+
+
+def send_premarket_analysis():
+    """
+    盤前分析 - 使用粒子模型預測並發送到 Discord
+    """
+    global PREMARKET_PREDICTIONS
+    logger.info("=== 開始盤前分析 ===")
+
+    try:
+        from directional_particle_model import DirectionalParticleModel
+        from newslib import read_stock_list
+
+        model = DirectionalParticleModel(n_particles=1000)
+        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+        dict_stock = read_stock_list(stock_list_file)
+
+        results = []
+        for name, code in dict_stock.items():
+            result = model.predict(str(code), name)
+            if 'error' not in result:
+                results.append(result)
+                # 儲存預測供盤後比較
+                PREMARKET_PREDICTIONS[result['stock_code']] = {
+                    'name': result['stock_name'],
+                    'predicted_price': result['predicted_price'],
+                    'direction': result['direction'],
+                    'confidence': result['confidence'],
+                    'current_price': result['current_price']
+                }
+
+        # 分類
+        bulls = [r for r in results if r['direction'] == '漲']
+        bears = [r for r in results if r['direction'] == '跌']
+        neutral = [r for r in results if r['direction'] == '盤整']
+
+        bulls.sort(key=lambda x: x['expected_change'], reverse=True)
+        bears.sort(key=lambda x: x['expected_change'])
+
+        # 組合訊息
+        now = datetime.datetime.now()
+        lines = [
+            '**📊 盤前分析報告**',
+            f'📅 {now.strftime("%Y/%m/%d")} {now.strftime("%H:%M")}',
+            '',
+            '**🟢 看漲 TOP 5：**'
+        ]
+
+        for r in bulls[:5]:
+            foreign = r['signals'].get('foreign', '')
+            foreign_info = f' [{foreign}]' if '買超' in foreign or '大買' in foreign else ''
+            lines.append(f"• {r['stock_name']}: ${r['current_price']:.0f}→${r['predicted_price']:.0f} ({r['expected_change']:+.1f}%){foreign_info}")
+
+        lines.append('')
+        lines.append('**🔴 看跌 TOP 5：**')
+
+        for r in bears[:5]:
+            foreign = r['signals'].get('foreign', '')
+            foreign_info = f' [{foreign}]' if '賣超' in foreign or '大賣' in foreign else ''
+            lines.append(f"• {r['stock_name']}: ${r['current_price']:.0f}→${r['predicted_price']:.0f} ({r['expected_change']:+.1f}%){foreign_info}")
+
+        # 重點關注
+        lines.append('')
+        lines.append('**⭐ 重點關注：**')
+        for r in results:
+            if r['stock_name'] in ['群聯', '景碩']:
+                foreign = r['signals'].get('foreign', '')
+                momentum = r['signals'].get('momentum', '')
+                lines.append(f"• {r['stock_name']}: ${r['current_price']:.0f}→${r['predicted_price']:.0f} ({r['expected_change']:+.1f}%) [{r['direction']} {r['confidence']:.0%}]")
+                lines.append(f"  └ {foreign}, {momentum}")
+
+        no_data = [name for name in ['群聯', '景碩'] if name not in [r['stock_name'] for r in results]]
+        for name in no_data:
+            lines.append(f'• {name}: 無歷史資料')
+
+        lines.append('')
+        lines.append(f'**📈 統計：** 看漲 {len(bulls)} 檔 | 看跌 {len(bears)} 檔 | 盤整 {len(neutral)} 檔')
+
+        message = '\n'.join(lines)
+        send_discord(message, title='盤前 AI 分析')
+        logger.info(f"盤前分析完成，預測 {len(results)} 檔股票")
+
+    except Exception as e:
+        logger.error(f"盤前分析失敗: {e}")
+
+
+def send_postmarket_analysis():
+    """
+    盤後誤差分析 - 比較預測 vs 實際收盤價
+    """
+    global PREMARKET_PREDICTIONS
+    logger.info("=== 開始盤後誤差分析 ===")
+
+    if not PREMARKET_PREDICTIONS:
+        logger.warning("沒有盤前預測資料，跳過誤差分析")
+        return
+
+    try:
+        from newslib import read_stock_list, craw_realtime
+
+        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+        dict_stock = read_stock_list(stock_list_file)
+        stock_list = [int(dict_stock[stock]) for stock in dict_stock.keys()]
+
+        # 抓取收盤價
+        data = craw_realtime(stock_list)
+
+        if 'msgArray' not in data or len(data['msgArray']) == 0:
+            logger.error("無法取得收盤資料")
+            return
+
+        # 比較預測與實際
+        results = []
+        correct_direction = 0
+        total_compared = 0
+
+        for item in data['msgArray']:
+            code = item.get('c', '')
+            actual_price = item.get('z', '-')
+            yesterday = item.get('y', '-')
+
+            if code in PREMARKET_PREDICTIONS and actual_price != '-':
+                pred = PREMARKET_PREDICTIONS[code]
+                actual_price = float(actual_price)
+                yesterday_price = float(yesterday) if yesterday != '-' else pred['current_price']
+
+                # 計算實際漲跌
+                actual_change = (actual_price - yesterday_price) / yesterday_price * 100
+                actual_direction = '漲' if actual_change > 0.5 else '跌' if actual_change < -0.5 else '盤整'
+
+                # 計算預測誤差
+                pred_error = abs(pred['predicted_price'] - actual_price) / actual_price * 100
+
+                # 方向是否正確
+                direction_correct = (pred['direction'] == actual_direction) or \
+                                   (pred['direction'] == '漲' and actual_change > 0) or \
+                                   (pred['direction'] == '跌' and actual_change < 0)
+
+                if direction_correct:
+                    correct_direction += 1
+                total_compared += 1
+
+                results.append({
+                    'name': pred['name'],
+                    'code': code,
+                    'predicted': pred['predicted_price'],
+                    'actual': actual_price,
+                    'pred_direction': pred['direction'],
+                    'actual_direction': actual_direction,
+                    'actual_change': actual_change,
+                    'error': pred_error,
+                    'correct': direction_correct
+                })
+
+        # 計算準確率
+        accuracy = correct_direction / total_compared * 100 if total_compared > 0 else 0
+
+        # 按誤差排序
+        results.sort(key=lambda x: x['error'])
+
+        # 組合訊息
+        now = datetime.datetime.now()
+        lines = [
+            '**📊 盤後誤差分析報告**',
+            f'📅 {now.strftime("%Y/%m/%d")} 收盤',
+            '',
+            f'**🎯 方向準確率: {accuracy:.1f}%** ({correct_direction}/{total_compared})',
+            '',
+            '**✅ 預測正確 TOP 5：**'
+        ]
+
+        correct_results = [r for r in results if r['correct']]
+        for r in correct_results[:5]:
+            emoji = '🟢' if r['actual_change'] > 0 else '🔴' if r['actual_change'] < 0 else '⚪'
+            lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']} → 實際{r['actual_change']:+.1f}% ✓")
+
+        lines.append('')
+        lines.append('**❌ 預測錯誤：**')
+
+        wrong_results = [r for r in results if not r['correct']]
+        for r in wrong_results[:5]:
+            emoji = '🟢' if r['actual_change'] > 0 else '🔴' if r['actual_change'] < 0 else '⚪'
+            lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']} → 實際{r['actual_change']:+.1f}% ✗")
+
+        # 重點關注的誤差
+        lines.append('')
+        lines.append('**⭐ 重點關注結果：**')
+        for r in results:
+            if r['name'] in ['群聯', '景碩']:
+                status = '✓' if r['correct'] else '✗'
+                lines.append(f"• {r['name']}: 預測${r['predicted']:.0f} → 實際${r['actual']:.0f} (誤差 {r['error']:.1f}%) {status}")
+
+        # 統計
+        avg_error = sum(r['error'] for r in results) / len(results) if results else 0
+        lines.append('')
+        lines.append(f'**📈 平均價格誤差: {avg_error:.1f}%**')
+
+        message = '\n'.join(lines)
+        send_discord(message, title='盤後誤差分析')
+        logger.info(f"盤後分析完成，準確率 {accuracy:.1f}%")
+
+        # 清空預測資料
+        PREMARKET_PREDICTIONS = {}
+
+    except Exception as e:
+        logger.error(f"盤後分析失敗: {e}")
 
 
 def fetch_fundamental_data():
@@ -361,17 +570,11 @@ def main():
     except Exception as e:
         logger.error(f"新聞收集失敗: {e}")
 
-    # 3. 發送 Discord 通知（開盤前）
+    # 3. 盤前分析（粒子模型預測）→ 發送 Discord
     try:
-        send_discord(
-            f"**每日排程啟動**\n\n"
-            f"日期: {now.strftime('%Y-%m-%d')}\n"
-            f"時間: {now.strftime('%H:%M')}\n\n"
-            f"即將開始盤中監控 (09:00-13:30)",
-            title="股票系統通知"
-        )
+        send_premarket_analysis()
     except Exception as e:
-        logger.error(f"發送通知失敗: {e}")
+        logger.error(f"盤前分析失敗: {e}")
 
     # 4. 即時股價監控（等到 9:00 開盤後開始）
     try:
@@ -379,9 +582,15 @@ def main():
     except Exception as e:
         logger.error(f"即時監控失敗: {e}")
 
-    # 5. 收盤後發送每日報告
+    # 5. 盤後誤差分析 → 發送 Discord
     try:
-        send_daily_report(news_count=0)  # TODO: 傳入實際收集數量
+        send_postmarket_analysis()
+    except Exception as e:
+        logger.error(f"盤後分析失敗: {e}")
+
+    # 6. 收盤後發送每日報告
+    try:
+        send_daily_report(news_count=0)
     except Exception as e:
         logger.error(f"發送每日報告失敗: {e}")
 
