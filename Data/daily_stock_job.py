@@ -50,10 +50,12 @@ PREMARKET_PREDICTIONS = {}
 
 def send_premarket_analysis():
     """
-    盤前分析 - 使用粒子模型預測並發送到 Discord
+    盤前分析 - 使用粒子模型 + GPT 新聞情緒預測並發送到 Discord
     """
     global PREMARKET_PREDICTIONS
     logger.info("=== 開始盤前分析 ===")
+
+    PRIORITY_STOCKS = ['群聯', '景碩']
 
     try:
         from directional_particle_model import DirectionalParticleModel
@@ -62,6 +64,17 @@ def send_premarket_analysis():
         model = DirectionalParticleModel(n_particles=1000)
         stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
         dict_stock = read_stock_list(stock_list_file)
+
+        # GPT 新聞情緒分析（優先股票）
+        gpt_sentiments = {}
+        try:
+            from gpt_sentiment import analyze_stock_with_news
+            for name in PRIORITY_STOCKS:
+                result = analyze_stock_with_news(name)
+                gpt_sentiments[name] = result
+                logger.info(f"GPT 盤前分析 {name}: {result.get('sentiment')} ({result.get('confidence', 0):.0%})")
+        except Exception as e:
+            logger.warning(f"GPT 分析失敗: {e}")
 
         results = []
         for name, code in dict_stock.items():
@@ -117,9 +130,22 @@ def send_premarket_analysis():
                 lines.append(f"• {r['stock_name']}: ${r['current_price']:.0f}→${r['predicted_price']:.0f} ({r['expected_change']:+.1f}%) [{r['direction']} {r['confidence']:.0%}]")
                 lines.append(f"  └ {foreign}, {momentum}")
 
-        no_data = [name for name in ['群聯', '景碩'] if name not in [r['stock_name'] for r in results]]
+        no_data = [name for name in PRIORITY_STOCKS if name not in [r['stock_name'] for r in results]]
         for name in no_data:
             lines.append(f'• {name}: 無歷史資料')
+
+        # GPT 新聞情緒分析
+        if gpt_sentiments:
+            lines.append('')
+            lines.append('**🤖 GPT 新聞情緒：**')
+            for name, result in gpt_sentiments.items():
+                sentiment = result.get('sentiment', '中性')
+                confidence = result.get('confidence', 0)
+                reason = result.get('reason', '')
+                emoji = "🟢" if sentiment == '漲' else "🔴" if sentiment == '跌' else "⚪"
+                lines.append(f"{emoji} {name}: {sentiment} ({confidence:.0%})")
+                if reason:
+                    lines.append(f"   └ {reason}")
 
         lines.append('')
         lines.append(f'**📈 統計：** 看漲 {len(bulls)} 檔 | 看跌 {len(bears)} 檔 | 盤整 {len(neutral)} 檔')
@@ -293,26 +319,21 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
     """
     發送股票預測通知到 Discord
     - 只顯示漲跌幅大的股票
-    - 加入重要新聞標題
+    - 加入 GPT 新聞情緒分析
     - 加入粒子模型預測
     """
-    from hybrid_predictor import hybrid_predict
-    from newslib import scrapBingNews, scrapGoogleNews
-    import re
-
     logger.info("發送 15 分鐘預測通知...")
 
     # 優先關注的股票
     PRIORITY_STOCKS = ['群聯', '景碩']
     CHANGE_THRESHOLD = 1.5  # 漲跌幅超過 1.5% 才顯示
 
-    # 載入粒子模型（每日只抓一次法人資料）
+    # 載入粒子模型
     particle_predictions = {}
     try:
         from directional_particle_model import DirectionalParticleModel
         particle_model = DirectionalParticleModel(n_particles=500)
 
-        # 只預測優先股票（節省時間）
         from newslib import read_stock_list
         stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
         dict_stock = read_stock_list(stock_list_file)
@@ -325,6 +346,17 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
                     particle_predictions[name] = result
     except Exception as e:
         logger.warning(f"粒子模型載入失敗: {e}")
+
+    # GPT 新聞情緒分析
+    gpt_sentiments = {}
+    try:
+        from gpt_sentiment import analyze_stock_with_news
+        for name in PRIORITY_STOCKS:
+            result = analyze_stock_with_news(name)
+            gpt_sentiments[name] = result
+            logger.info(f"GPT 分析 {name}: {result.get('sentiment')} ({result.get('confidence', 0):.0%})")
+    except Exception as e:
+        logger.warning(f"GPT 分析失敗: {e}")
 
     # 建立通知內容
     lines = [
@@ -383,38 +415,18 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
             emoji = "🔴" if s['change_pct'] < 0 else "🟢"
             lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%)")
 
-    # 抓取重要新聞並分析
-    if clf and vectorizer:
+    # GPT 新聞情緒分析結果
+    if gpt_sentiments:
         lines.append("")
-        lines.append("**📰 重要新聞：**")
-
-        news_items = []
-        # 針對優先股票抓新聞
-        for stock_name in PRIORITY_STOCKS[:2]:
-            try:
-                url, title, body, bs = scrapBingNews(stock_name)
-                if body:
-                    # 提取新聞句子
-                    sentences = re.split(r'[。！？\n]', body)
-                    for sent in sentences[:3]:
-                        sent = sent.strip()
-                        if len(sent) > 15 and stock_name in sent:
-                            pred, conf, _ = hybrid_predict(sent, clf, vectorizer)
-                            news_items.append({
-                                'text': sent[:50] + '...' if len(sent) > 50 else sent,
-                                'prediction': pred,
-                                'stock': stock_name
-                            })
-                            break
-            except:
-                continue
-
-        if news_items:
-            for item in news_items[:3]:
-                emoji = "🟢" if item['prediction'] == '漲' else "🔴" if item['prediction'] == '跌' else "⚪"
-                lines.append(f"{emoji} [{item['stock']}] {item['text']}")
-        else:
-            lines.append("（暫無重大新聞）")
+        lines.append("**🤖 GPT 新聞情緒：**")
+        for name, result in gpt_sentiments.items():
+            sentiment = result.get('sentiment', '中性')
+            confidence = result.get('confidence', 0)
+            reason = result.get('reason', '')
+            emoji = "🟢" if sentiment == '漲' else "🔴" if sentiment == '跌' else "⚪"
+            lines.append(f"{emoji} {name}: {sentiment} ({confidence:.0%})")
+            if reason:
+                lines.append(f"   └ {reason}")
 
     # 統計摘要
     bull_count = sum(1 for s in stock_changes if s['change_pct'] > 0)
