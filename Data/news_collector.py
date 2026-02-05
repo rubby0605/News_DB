@@ -19,6 +19,7 @@ import random
 import datetime
 import logging
 import csv
+import hashlib
 from pathlib import Path
 
 # 設定工作目錄
