@@ -27,6 +27,7 @@ from newslib import (
     craw_realtime,
     get_stock_info
 )
+from news_collector import collect_all_news
 
 # 設定日誌
 LOG_FILE = os.path.join(SCRIPT_DIR, 'logs', f'stock_job_{datetime.date.today()}.log')
@@ -174,7 +175,14 @@ def main():
     except Exception as e:
         logger.error(f"基本面資料抓取失敗: {e}")
 
-    # 2. 即時股價監控（等到 9:00 開盤後開始）
+    # 2. 收集新聞資料（用於 AI 訓練）
+    try:
+        logger.info("=== 開始收集新聞 ===")
+        collect_all_news()
+    except Exception as e:
+        logger.error(f"新聞收集失敗: {e}")
+
+    # 3. 即時股價監控（等到 9:00 開盤後開始）
     try:
         monitor_realtime_prices()
     except Exception as e:
