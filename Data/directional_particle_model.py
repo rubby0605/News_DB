@@ -36,9 +36,9 @@ def get_institutional_data(date=None, retry=0):
         return {}
 
     if date is None:
-        # 使用較保守的日期（避免系統日期問題）
-        # 嘗試從 2024/12 開始
-        date = datetime.date(2024, 12, 31)
+        # 自動找最近有資料的交易日（從今天往前找）
+        today = datetime.date.today()
+        date = today
 
     date_str = date.strftime('%Y%m%d')
     url = f'https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALLBUT0999&response=json'
@@ -87,8 +87,16 @@ def get_stock_history(stock_code, days=20):
     result = []
     headers = {'User-Agent': 'Mozilla/5.0'}
 
-    # 使用固定的有效日期（2024/12 和 2024/11）
-    base_dates = ['20241201', '20241101']
+    # 自動計算最近兩個月（從今天往前）
+    today = datetime.date.today()
+    base_dates = []
+    for month_offset in range(2):
+        target_month = today.month - month_offset
+        target_year = today.year
+        if target_month <= 0:
+            target_month += 12
+            target_year -= 1
+        base_dates.append(f'{target_year}{target_month:02d}01')
 
     # 1. 先試 TWSE (上市)
     for date_str in base_dates:
@@ -128,7 +136,15 @@ def get_stock_history(stock_code, days=20):
 
     # 如果 TWSE 沒資料，試 TPEX (上櫃)
     if not result:
-        tpex_dates = ['2024/12/01', '2024/11/01']
+        # 自動計算 TPEX 日期格式
+        tpex_dates = []
+        for month_offset in range(2):
+            target_month = today.month - month_offset
+            target_year = today.year
+            if target_month <= 0:
+                target_month += 12
+                target_year -= 1
+            tpex_dates.append(f'{target_year}/{target_month:02d}/01')
 
         for date_str in tpex_dates:
             url = f'https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?id={stock_code}&date={date_str}'
