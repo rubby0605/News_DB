@@ -28,6 +28,7 @@ from newslib import (
     get_stock_info
 )
 from news_collector import collect_all_news
+from notifier import send_daily_report, send_discord
 
 # 設定日誌
 LOG_FILE = os.path.join(SCRIPT_DIR, 'logs', f'stock_job_{datetime.date.today()}.log')
@@ -182,11 +183,29 @@ def main():
     except Exception as e:
         logger.error(f"新聞收集失敗: {e}")
 
-    # 3. 即時股價監控（等到 9:00 開盤後開始）
+    # 3. 發送 Discord 通知（開盤前）
+    try:
+        send_discord(
+            f"**每日排程啟動**\n\n"
+            f"日期: {now.strftime('%Y-%m-%d')}\n"
+            f"時間: {now.strftime('%H:%M')}\n\n"
+            f"即將開始盤中監控 (09:00-13:30)",
+            title="股票系統通知"
+        )
+    except Exception as e:
+        logger.error(f"發送通知失敗: {e}")
+
+    # 4. 即時股價監控（等到 9:00 開盤後開始）
     try:
         monitor_realtime_prices()
     except Exception as e:
         logger.error(f"即時監控失敗: {e}")
+
+    # 5. 收盤後發送每日報告
+    try:
+        send_daily_report(news_count=0)  # TODO: 傳入實際收集數量
+    except Exception as e:
+        logger.error(f"發送每日報告失敗: {e}")
 
     logger.info("今日任務完成")
 
