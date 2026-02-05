@@ -83,54 +83,102 @@ def fetch_fundamental_data():
 def send_prediction_notification(stock_prices, clf, vectorizer, now):
     """
     發送股票預測通知到 Discord
+    - 只顯示漲跌幅大的股票
+    - 加入重要新聞標題
     """
     from hybrid_predictor import hybrid_predict
     from newslib import scrapBingNews, scrapGoogleNews
+    import re
 
     logger.info("發送 15 分鐘預測通知...")
 
+    # 優先關注的股票
+    PRIORITY_STOCKS = ['群聯', '景碩']
+    CHANGE_THRESHOLD = 1.5  # 漲跌幅超過 1.5% 才顯示
+
     # 建立通知內容
     lines = [
-        f"**時間:** {now.strftime('%H:%M')}",
-        "",
-        "**即時股價:**"
+        f"**{now.strftime('%H:%M')} 盤中快報**",
     ]
 
-    # 股價摘要（只列前 10 檔有成交的）
-    active_stocks = [s for s in stock_prices if s['price'] != '-'][:10]
-    for s in active_stocks:
+    # 計算每檔股票的漲跌幅
+    stock_changes = []
+    for s in stock_prices:
+        if s['price'] == '-':
+            continue
         try:
             price = float(s['price'])
             yesterday = float(s['yesterday']) if s['yesterday'] != '-' else price
             change_pct = ((price - yesterday) / yesterday) * 100
-            emoji = "🔴" if change_pct < 0 else "🟢" if change_pct > 0 else "⚪"
-            lines.append(f"{emoji} {s['name']}: ${price:.1f} ({change_pct:+.1f}%)")
+            stock_changes.append({
+                'name': s['name'],
+                'code': s['code'],
+                'price': price,
+                'change_pct': change_pct,
+                'is_priority': s['name'] in PRIORITY_STOCKS
+            })
         except:
-            lines.append(f"⚪ {s['name']}: ${s['price']}")
+            continue
 
-    # AI 預測摘要
+    # 篩選：優先股 + 漲跌幅大的
+    priority = [s for s in stock_changes if s['is_priority']]
+    big_movers = [s for s in stock_changes if abs(s['change_pct']) >= CHANGE_THRESHOLD and not s['is_priority']]
+    big_movers.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+
+    # 顯示優先關注股票
+    if priority:
+        lines.append("")
+        lines.append("**⭐ 重點關注：**")
+        for s in priority:
+            emoji = "🔴" if s['change_pct'] < 0 else "🟢" if s['change_pct'] > 0 else "⚪"
+            lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%)")
+
+    # 顯示漲跌幅大的股票（最多 5 檔）
+    if big_movers:
+        lines.append("")
+        lines.append("**📊 大幅波動：**")
+        for s in big_movers[:5]:
+            emoji = "🔴" if s['change_pct'] < 0 else "🟢"
+            lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%)")
+
+    # 抓取重要新聞並分析
     if clf and vectorizer:
-        lines.extend(["", "**AI 新聞預測:**"])
+        lines.append("")
+        lines.append("**📰 重要新聞：**")
 
-        # 簡單的預測示例（根據股票名稱生成假新聞標題進行預測）
-        predictions = []
-        for s in active_stocks[:5]:
+        news_items = []
+        # 針對優先股票抓新聞
+        for stock_name in PRIORITY_STOCKS[:2]:
             try:
-                # 用股票名稱作為關鍵字產生預測
-                test_news = f"{s['name']}今日股價表現"
-                pred, conf, details = hybrid_predict(test_news, clf, vectorizer)
-                predictions.append({
-                    'name': s['name'],
-                    'prediction': pred,
-                    'confidence': conf
-                })
+                url, title, body, bs = scrapBingNews(stock_name)
+                if body:
+                    # 提取新聞句子
+                    sentences = re.split(r'[。！？\n]', body)
+                    for sent in sentences[:3]:
+                        sent = sent.strip()
+                        if len(sent) > 15 and stock_name in sent:
+                            pred, conf, _ = hybrid_predict(sent, clf, vectorizer)
+                            news_items.append({
+                                'text': sent[:50] + '...' if len(sent) > 50 else sent,
+                                'prediction': pred,
+                                'stock': stock_name
+                            })
+                            break
             except:
                 continue
 
-        bull_count = sum(1 for p in predictions if p['prediction'] == '漲')
-        bear_count = sum(1 for p in predictions if p['prediction'] == '跌')
+        if news_items:
+            for item in news_items[:3]:
+                emoji = "🟢" if item['prediction'] == '漲' else "🔴" if item['prediction'] == '跌' else "⚪"
+                lines.append(f"{emoji} [{item['stock']}] {item['text']}")
+        else:
+            lines.append("（暫無重大新聞）")
 
-        lines.append(f"看漲: {bull_count} 檔 | 看跌: {bear_count} 檔")
+    # 統計摘要
+    bull_count = sum(1 for s in stock_changes if s['change_pct'] > 0)
+    bear_count = sum(1 for s in stock_changes if s['change_pct'] < 0)
+    lines.append("")
+    lines.append(f"📈 上漲: {bull_count} 檔 | 📉 下跌: {bear_count} 檔")
 
     message = "\n".join(lines)
 
