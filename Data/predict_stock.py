@@ -18,14 +18,14 @@ os.chdir(SCRIPT_DIR)
 
 from newslib import read_stock_list, scrapBingNews, scrapGoogleNews
 from news_collector import extract_news_from_bing, extract_news_from_google, clean_text
-from train_sentiment_model import preprocess_text, load_model
+from hybrid_predictor import hybrid_predict, analyze_news, load_ml_model
 
 MODEL_DIR = os.path.join(SCRIPT_DIR, 'models')
 
 
 def predict_stock(stock_name, stock_code=None):
     """
-    預測單一股票的漲跌
+    預測單一股票的漲跌（使用混合模型）
 
     Args:
         stock_name: 股票名稱（如 "台積電"）
@@ -37,12 +37,7 @@ def predict_stock(stock_name, stock_code=None):
         news_list: 分析的新聞列表
     """
     # 載入模型
-    try:
-        clf, vectorizer = load_model()
-    except FileNotFoundError:
-        print("錯誤：找不到模型檔案")
-        print("請先執行: python train_sentiment_model.py")
-        return None, None, None
+    clf, vectorizer = load_ml_model()
 
     # 收集新聞
     print(f"\n搜尋 {stock_name} 相關新聞...")
@@ -57,43 +52,46 @@ def predict_stock(stock_name, stock_code=None):
 
     print(f"找到 {len(news_list)} 則新聞\n")
 
-    # 預測每則新聞
-    predictions = []
-    for news in news_list:
-        title = news['title']
-        clean_title = preprocess_text(title)
+    # 使用混合預測
+    news_texts = [n['title'] for n in news_list if len(n.get('title', '')) > 5]
 
-        if len(clean_title) < 5:
-            continue
-
-        X = vectorizer.transform([clean_title])
-        pred = clf.predict(X)[0]
-        proba = clf.predict_proba(X)[0]
-        confidence = max(proba)
-
-        predictions.append({
-            'title': title,
-            'prediction': '漲' if pred == 1 else '跌',
-            'confidence': confidence
-        })
-
-    if not predictions:
+    if not news_texts:
         print("無法分析新聞")
         return None, None, []
 
-    # 彙總預測
-    bull_count = sum(1 for p in predictions if p['prediction'] == '漲')
-    bear_count = len(predictions) - bull_count
+    # 分析每則新聞
+    predictions = []
+    bull_count = 0
+    bear_count = 0
 
-    bull_confidence = sum(p['confidence'] for p in predictions if p['prediction'] == '漲')
-    bear_confidence = sum(p['confidence'] for p in predictions if p['prediction'] == '跌')
+    for title in news_texts:
+        pred, conf, details = hybrid_predict(title, clf, vectorizer)
+        predictions.append({
+            'title': title,
+            'prediction': pred,
+            'confidence': conf,
+            'keyword_score': details['keyword_score']
+        })
 
-    if bull_count > bear_count:
+        if pred == '漲':
+            bull_count += 1
+        elif pred == '跌':
+            bear_count += 1
+
+    # 綜合判斷
+    total = bull_count + bear_count
+    if total == 0:
+        final_prediction = '持平'
+        final_confidence = 0.5
+    elif bull_count > bear_count * 1.2:
         final_prediction = '漲'
-        final_confidence = bull_confidence / bull_count if bull_count > 0 else 0
-    else:
+        final_confidence = bull_count / total
+    elif bear_count > bull_count * 1.2:
         final_prediction = '跌'
-        final_confidence = bear_confidence / bear_count if bear_count > 0 else 0
+        final_confidence = bear_count / total
+    else:
+        final_prediction = '持平'
+        final_confidence = 0.5
 
     # 輸出結果
     print("=" * 60)
@@ -105,12 +103,13 @@ def predict_stock(stock_name, stock_code=None):
     print(f"  看跌新聞: {bear_count} 則")
     print("=" * 60)
 
-    # 顯示高信心度新聞
-    print("\n高信心度新聞:")
-    high_conf = sorted(predictions, key=lambda x: x['confidence'], reverse=True)[:5]
-    for i, p in enumerate(high_conf, 1):
-        print(f"{i}. [{p['prediction']}] {p['title'][:50]}...")
-        print(f"   信心度: {p['confidence']:.1%}")
+    # 顯示重要新聞
+    print("\n重要新聞:")
+    # 按關鍵字分數排序
+    sorted_preds = sorted(predictions, key=lambda x: abs(x['keyword_score']), reverse=True)[:5]
+    for i, p in enumerate(sorted_preds, 1):
+        kw = p['keyword_score']
+        print(f"{i}. [{p['prediction']}] (關鍵字:{kw:+.1f}) {p['title'][:45]}...")
 
     return final_prediction, final_confidence, predictions
 
