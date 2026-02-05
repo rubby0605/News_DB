@@ -85,6 +85,7 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
     發送股票預測通知到 Discord
     - 只顯示漲跌幅大的股票
     - 加入重要新聞標題
+    - 加入粒子模型預測
     """
     from hybrid_predictor import hybrid_predict
     from newslib import scrapBingNews, scrapGoogleNews
@@ -95,6 +96,26 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
     # 優先關注的股票
     PRIORITY_STOCKS = ['群聯', '景碩']
     CHANGE_THRESHOLD = 1.5  # 漲跌幅超過 1.5% 才顯示
+
+    # 載入粒子模型（每日只抓一次法人資料）
+    particle_predictions = {}
+    try:
+        from directional_particle_model import DirectionalParticleModel
+        particle_model = DirectionalParticleModel(n_particles=500)
+
+        # 只預測優先股票（節省時間）
+        from newslib import read_stock_list
+        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+        dict_stock = read_stock_list(stock_list_file)
+
+        for name in PRIORITY_STOCKS:
+            if name in dict_stock:
+                code = str(dict_stock[name])
+                result = particle_model.predict(code, name)
+                if 'error' not in result:
+                    particle_predictions[name] = result
+    except Exception as e:
+        logger.warning(f"粒子模型載入失敗: {e}")
 
     # 建立通知內容
     lines = [
@@ -132,6 +153,18 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
         for s in priority:
             emoji = "🔴" if s['change_pct'] < 0 else "🟢" if s['change_pct'] > 0 else "⚪"
             lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%)")
+
+    # 顯示粒子模型預測
+    if particle_predictions:
+        lines.append("")
+        lines.append("**🎯 AI預測（法人+技術面）：**")
+        for name, pred in particle_predictions.items():
+            emoji = "🟢" if pred['direction'] == '漲' else "🔴" if pred['direction'] == '跌' else "⚪"
+            # 顯示主要信號
+            signal = pred['signals'].get('foreign', '')
+            lines.append(f"{emoji} {name}: ${pred['current_price']:.0f}→${pred['predicted_price']:.0f} ({pred['expected_change']:+.1f}%) [{pred['direction']} {pred['confidence']:.0%}]")
+            if signal:
+                lines.append(f"   └ {signal}")
 
     # 顯示漲跌幅大的股票（最多 5 檔）
     if big_movers:
