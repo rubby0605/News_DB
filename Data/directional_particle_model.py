@@ -260,9 +260,16 @@ def calc_volatility(prices, days=10):
 # ============================================================
 
 WEIGHTS_FILE = os.path.join(SCRIPT_DIR, 'optimized_weights.json')
+_WEIGHTS_CACHE = None
+_WEIGHTS_LOADED = False
 
 def load_optimized_weights():
-    """載入優化後的權重"""
+    """載入優化後的權重（只顯示一次 log）"""
+    global _WEIGHTS_CACHE, _WEIGHTS_LOADED
+
+    if _WEIGHTS_CACHE is not None:
+        return _WEIGHTS_CACHE
+
     default_weights = {
         'foreign_large': 3000,
         'foreign_medium': 1000,
@@ -276,13 +283,19 @@ def load_optimized_weights():
         try:
             with open(WEIGHTS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                weights = data.get('weights', default_weights)
-                print(f"使用優化權重 (準確率: {data.get('accuracy', 0):.1%})")
-                return weights
+                _WEIGHTS_CACHE = data.get('weights', default_weights)
+                if not _WEIGHTS_LOADED:
+                    print(f"使用優化權重 (準確率: {data.get('accuracy', 0):.1%})")
+                    _WEIGHTS_LOADED = True
+                return _WEIGHTS_CACHE
         except:
             pass
 
-    print("使用預設權重")
+    if not _WEIGHTS_LOADED:
+        print("使用預設權重")
+        _WEIGHTS_LOADED = True
+
+    _WEIGHTS_CACHE = default_weights
     return default_weights
 
 
