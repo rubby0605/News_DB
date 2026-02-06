@@ -255,6 +255,117 @@ def calc_volatility(prices, days=10):
     return np.std(recent) / np.mean(recent) * 100
 
 
+def calc_volume_signal(history, lookback=20):
+    """
+    計算成交量訊號
+
+    Returns:
+        float: 量比 (今日量 / N日平均量)
+        float: 最近一日價格漲跌%
+    """
+    if not history or len(history) < lookback + 1:
+        return 1.0, 0
+
+    volumes = [d.get('volume', 0) for d in history]
+    if not all(v > 0 for v in volumes[-lookback:]):
+        return 1.0, 0
+
+    avg_volume = sum(volumes[-lookback - 1:-1]) / lookback
+    today_volume = volumes[-1]
+
+    volume_ratio = today_volume / avg_volume if avg_volume > 0 else 1.0
+
+    if len(history) >= 2:
+        price_change = (history[-1]['close'] - history[-2]['close']) / history[-2]['close'] * 100
+    else:
+        price_change = 0
+
+    return volume_ratio, price_change
+
+
+# ============================================================
+# 大盤/美股訊號
+# ============================================================
+
+_MARKET_SIGNAL_CACHE = None
+_MARKET_SIGNAL_DATE = None
+
+
+def get_market_signal():
+    """
+    抓取大盤（加權指數）和費半訊號
+
+    Returns:
+        dict: {taiex_change, taiex_signal, sox_change, sox_signal}
+    """
+    result = {'taiex_change': 0, 'taiex_signal': 0, 'sox_change': None, 'sox_signal': 0}
+
+    # 1. 加權指數 (TAIEX)
+    try:
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=10)
+        data = resp.json()
+        if data.get('msgArray'):
+            item = data['msgArray'][0]
+            current = float(item.get('z', '0') or '0')
+            yesterday = float(item.get('y', '0') or '0')
+            if current > 0 and yesterday > 0:
+                change_pct = (current - yesterday) / yesterday * 100
+                result['taiex_change'] = change_pct
+                result['taiex_signal'] = max(-1, min(1, change_pct / 2.0))
+    except Exception as e:
+        print(f"TAIEX 訊號錯誤: {e}")
+
+    # 2. 費半 (SOX) - 使用 yfinance (可選)
+    try:
+        import yfinance as yf
+        sox = yf.Ticker("^SOX")
+        hist = sox.history(period="2d")
+        if len(hist) >= 2:
+            prev_close = hist['Close'].iloc[-2]
+            last_close = hist['Close'].iloc[-1]
+            change_pct = (last_close - prev_close) / prev_close * 100
+            result['sox_change'] = change_pct
+            result['sox_signal'] = max(-1, min(1, change_pct / 2.0))
+    except ImportError:
+        pass  # yfinance 未安裝，跳過
+    except Exception:
+        pass
+
+    return result
+
+
+def get_cached_market_signal():
+    """取得大盤訊號（每日快取）"""
+    global _MARKET_SIGNAL_CACHE, _MARKET_SIGNAL_DATE
+    today = datetime.date.today()
+    if _MARKET_SIGNAL_CACHE is not None and _MARKET_SIGNAL_DATE == today:
+        return _MARKET_SIGNAL_CACHE
+    _MARKET_SIGNAL_CACHE = get_market_signal()
+    _MARKET_SIGNAL_DATE = today
+    return _MARKET_SIGNAL_CACHE
+
+
+def map_gpt_sentiment_to_bias(sentiment, confidence):
+    """
+    將 GPT 情緒結果映射為 bias 值
+
+    Args:
+        sentiment: '漲', '跌', or '中性'
+        confidence: 0.0 to 1.0
+
+    Returns:
+        float: bias 貢獻值, 通常 -2.5 到 +2.5
+    """
+    if sentiment == '漲':
+        return confidence * 2.5
+    elif sentiment == '跌':
+        return -confidence * 2.5
+    else:
+        return 0.0
+
+
 # ============================================================
 # 權重載入
 # ============================================================
@@ -303,9 +414,14 @@ def load_optimized_weights():
 # 方向偏移計算
 # ============================================================
 
-def calc_directional_bias(stock_code, institutional_data, history, weights=None):
+def calc_directional_bias(stock_code, institutional_data, history, weights=None,
+                          market_signal=None, external_bias=None):
     """
     計算方向偏移量（使用優化權重）
+
+    Args:
+        market_signal: 大盤/費半訊號 dict（可選）
+        external_bias: 外部偏移（如 GPT 情緒，可選）
 
     Returns:
         float: 偏移量 (-10 到 +10)
@@ -417,6 +533,76 @@ def calc_directional_bias(stock_code, institutional_data, history, weights=None)
             bias -= 0.5
             signals['rsi'] = f'RSI={rsi:.0f} (偏空)'
 
+    # 5. 大盤/費半訊號
+    if market_signal is None:
+        try:
+            market_signal = get_cached_market_signal()
+        except Exception:
+            market_signal = {}
+
+    market_weight = weights.get('market_weight', 1.0)
+    taiex_sig = market_signal.get('taiex_signal', 0)
+    sox_sig = market_signal.get('sox_signal', 0)
+
+    if taiex_sig != 0:
+        bias += taiex_sig * market_weight * 0.6
+        signals['taiex'] = f'加權指數 {market_signal.get("taiex_change", 0):+.1f}%'
+
+    if sox_sig != 0:
+        bias += sox_sig * market_weight * 0.4
+        signals['sox'] = f'費半 {market_signal.get("sox_change", 0):+.1f}%'
+
+    # 6. GPT 情緒偏移（外部傳入）
+    if external_bias is not None:
+        gpt_weight = weights.get('gpt_weight', 1.0)
+        bias += external_bias * gpt_weight
+        signals['gpt'] = f'GPT情緒偏移 {external_bias:+.1f}'
+
+    # 7. 成交量確認訊號
+    if history and len(history) >= 21:
+        volume_weight = weights.get('volume_weight', 0.5)
+        volume_ratio, price_dir = calc_volume_signal(history, lookback=20)
+
+        if volume_ratio > 1.5:
+            if price_dir > 0.5:
+                bias += volume_weight
+                signals['volume'] = f'放量上漲 (量比 {volume_ratio:.1f}x)'
+            elif price_dir < -0.5:
+                bias -= volume_weight
+                signals['volume'] = f'放量下跌 (量比 {volume_ratio:.1f}x)'
+            else:
+                signals['volume'] = f'放量盤整 (量比 {volume_ratio:.1f}x)'
+        elif volume_ratio < 0.5:
+            bias *= 0.8
+            signals['volume'] = f'縮量 (量比 {volume_ratio:.1f}x) 信念減弱'
+        else:
+            signals['volume'] = f'量比 {volume_ratio:.1f}x (正常)'
+
+    # 8. 系統偏差自動修正
+    if weights.get('enable_auto_correction', False):
+        try:
+            from prediction_history import calc_correction_factor
+            correction = calc_correction_factor()
+            if bias > 0:
+                factor = correction.get('bullish_factor', 1.0)
+                if factor < 1.0:
+                    bias *= factor
+                    signals['correction'] = f'多頭修正 x{factor:.2f} (準確率 {correction.get("bullish_accuracy", 0):.0%})'
+            elif bias < 0:
+                factor = correction.get('bearish_factor', 1.0)
+                if factor < 1.0:
+                    bias *= factor
+                    signals['correction'] = f'空頭修正 x{factor:.2f} (準確率 {correction.get("bearish_accuracy", 0):.0%})'
+        except Exception:
+            pass
+
+    # Bias 衰減：壓縮極端值（sqrt 衰減）
+    dampening_threshold = weights.get('dampening_threshold', 3.0)
+    if abs(bias) > dampening_threshold:
+        sign = 1 if bias > 0 else -1
+        bias = sign * (dampening_threshold + math.sqrt(abs(bias) - dampening_threshold))
+        signals['dampening'] = f'偏移已抑制 (原始>{dampening_threshold:.1f})'
+
     # 限制在 -10 到 +10
     bias = max(-10, min(10, bias))
 
@@ -473,7 +659,8 @@ class DirectionalParticleModel:
             self.institutional_data = get_institutional_data()
             self.last_fetch_date = datetime.date.today()
 
-    def predict(self, stock_code, stock_name=None, current_price=None):
+    def predict(self, stock_code, stock_name=None, current_price=None,
+                gpt_sentiment=None, market_signal=None):
         """
         預測股票價格
 
@@ -481,6 +668,8 @@ class DirectionalParticleModel:
             stock_code: 股票代號
             stock_name: 股票名稱（可選）
             current_price: 當前價格（可選，會自動抓取）
+            gpt_sentiment: GPT 情緒結果 dict（可選）
+            market_signal: 大盤訊號 dict（可選）
 
         Returns:
             dict: 預測結果
@@ -501,11 +690,21 @@ class DirectionalParticleModel:
         if current_price is None:
             current_price = history[-1]['close']
 
+        # 映射 GPT 情緒為 bias
+        external_bias = None
+        if gpt_sentiment:
+            external_bias = map_gpt_sentiment_to_bias(
+                gpt_sentiment.get('sentiment', '中性'),
+                gpt_sentiment.get('confidence', 0)
+            )
+
         # 計算方向偏移
         bias, signals = calc_directional_bias(
             stock_code,
             self.institutional_data or {},
-            history
+            history,
+            market_signal=market_signal,
+            external_bias=external_bias
         )
 
         # 計算波動率
@@ -528,15 +727,21 @@ class DirectionalParticleModel:
         prob_up = np.sum(particles > current_price) / len(particles)
         prob_down = np.sum(particles < current_price) / len(particles)
 
-        # 預測方向
-        if prob_up > 0.6:
+        # 預測方向（使用可調門檻）
+        weights = load_optimized_weights()
+        conf_threshold = weights.get('confidence_threshold', 0.65)
+
+        if prob_up > conf_threshold:
             direction = '漲'
             confidence = prob_up
-        elif prob_down > 0.6:
+        elif prob_down > conf_threshold:
             direction = '跌'
             confidence = prob_down
-        else:
+        elif max(prob_up, prob_down) > 0.55:
             direction = '盤整'
+            confidence = max(prob_up, prob_down)
+        else:
+            direction = '觀望'
             confidence = max(prob_up, prob_down)
 
         # 預測價格區間 (68% 信賴區間)

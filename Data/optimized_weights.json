@@ -1,0 +1,18 @@
+{
+  "weights": {
+    "foreign_large": 4903,
+    "foreign_medium": 1359,
+    "foreign_weight": 2.7584169801981036,
+    "momentum_weight": 0.5021635711887154,
+    "ema_weight": 0.5001200089488146,
+    "momentum_threshold": 7.046605070816158,
+    "dampening_threshold": 3.0,
+    "market_weight": 1.0,
+    "gpt_weight": 1.0,
+    "confidence_threshold": 0.65,
+    "volume_weight": 0.5,
+    "enable_auto_correction": true
+  },
+  "accuracy": 0.40625,
+  "updated": "2026-02-06T15:21:10.854490"
+}

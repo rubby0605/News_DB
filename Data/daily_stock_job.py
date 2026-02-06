@@ -137,10 +137,11 @@ def send_premarket_analysis():
         except Exception as e:
             logger.warning(f"GPT 分析失敗: {e}")
 
-        # 對全部股票做粒子模型預測
+        # 對全部股票做粒子模型預測（焦點股整合 GPT 情緒）
         results = []
         for name, code in dict_stock.items():
-            result = model.predict(str(code), name)
+            gpt_data = gpt_sentiments.get(name) if name in focus_names else None
+            result = model.predict(str(code), name, gpt_sentiment=gpt_data)
             if 'error' not in result:
                 results.append(result)
                 PREMARKET_PREDICTIONS[result['stock_code']] = {
@@ -149,8 +150,16 @@ def send_premarket_analysis():
                     'direction': result['direction'],
                     'confidence': result['confidence'],
                     'current_price': result['current_price'],
-                    'is_focus': result['stock_code'] in focus_codes
+                    'is_focus': result['stock_code'] in focus_codes,
+                    'has_gpt': gpt_data is not None,
                 }
+                # 記錄預測（供系統偏差自動修正用）
+                try:
+                    from prediction_history import record_prediction
+                    record_prediction(result['stock_code'], result['direction'],
+                                      result['confidence'], result['bias'])
+                except Exception:
+                    pass
 
         # 分出焦點股票和其餘股票的預測結果
         focus_results = [r for r in results if r['stock_code'] in focus_codes or r['stock_name'] in focus_names]
@@ -159,7 +168,7 @@ def send_premarket_analysis():
         # 其餘股票分類
         other_bulls = [r for r in other_results if r['direction'] == '漲']
         other_bears = [r for r in other_results if r['direction'] == '跌']
-        other_neutral = [r for r in other_results if r['direction'] == '盤整']
+        other_neutral = [r for r in other_results if r['direction'] in ('盤整', '觀望')]
 
         other_bulls.sort(key=lambda x: x['expected_change'], reverse=True)
         other_bears.sort(key=lambda x: x['expected_change'])
@@ -168,6 +177,7 @@ def send_premarket_analysis():
         all_bulls = [r for r in results if r['direction'] == '漲']
         all_bears = [r for r in results if r['direction'] == '跌']
         all_neutral = [r for r in results if r['direction'] == '盤整']
+        all_wait = [r for r in results if r['direction'] == '觀望']
 
         # 組合訊息
         now = datetime.datetime.now()
@@ -227,7 +237,8 @@ def send_premarket_analysis():
             lines.append(f"• {r['stock_name']}: {r['expected_change']:+.1f}% [{r['direction']} {r['confidence']:.0%}]")
 
         lines.append('')
-        lines.append(f'**📈 統計：** 看漲 {len(all_bulls)} 檔 | 看跌 {len(all_bears)} 檔 | 盤整 {len(all_neutral)} 檔')
+        wait_str = f' | 觀望 {len(all_wait)} 檔' if all_wait else ''
+        lines.append(f'**📈 統計：** 看漲 {len(all_bulls)} 檔 | 看跌 {len(all_bears)} 檔 | 盤整 {len(all_neutral)} 檔{wait_str}')
 
         message = '\n'.join(lines)
         send_discord(message, title='盤前 AI 分析', channel=DISCORD_CHANNEL)
@@ -281,8 +292,30 @@ def send_postmarket_analysis():
                 actual_change = (actual_price - yesterday_price) / yesterday_price * 100
                 actual_direction = '漲' if actual_change > 0.5 else '跌' if actual_change < -0.5 else '盤整'
 
+                # 記錄結果（供系統偏差自動修正用）
+                try:
+                    from prediction_history import record_outcome
+                    record_outcome(code, actual_direction, actual_change)
+                except Exception:
+                    pass
+
                 # 計算預測誤差
                 pred_error = abs(pred['predicted_price'] - actual_price) / actual_price * 100
+
+                # 觀望類別不計入方向準確率
+                if pred['direction'] == '觀望':
+                    results.append({
+                        'name': pred['name'],
+                        'code': code,
+                        'predicted': pred['predicted_price'],
+                        'actual': actual_price,
+                        'pred_direction': pred['direction'],
+                        'actual_direction': actual_direction,
+                        'actual_change': actual_change,
+                        'error': pred_error,
+                        'correct': None  # 觀望不判斷對錯
+                    })
+                    continue
 
                 # 方向是否正確
                 direction_correct = (pred['direction'] == actual_direction) or \
