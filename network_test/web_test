@@ -1,0 +1,4 @@
+netstat -an | grep ESTABLISHED |awk '/^tcp/{print $5}' |awk -F: '{print $1}' |sort |uniq -c |sort -nr
+
+netstat -ant |awk '{print $6}' |grep -v established) | grep -v Foreign | sort | uniq -c |sort -n
+

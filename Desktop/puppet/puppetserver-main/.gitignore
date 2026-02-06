@@ -1,0 +1,34 @@
+scratch
+pom.xml
+*jar
+/lib/
+/classes/
+/output/
+/targets/
+.lein-deps-sum
+.lein-failures
+target/
+log
+.bundle
+.vagrant
+vendor
+.nrepl-port
+profiles.clj
+dev/user.clj
+.lein-repl-history
+ext/packaging
+checkouts
+.beaker
+
+# Bundler local state files
+Gemfile.lock
+Gemfile.local
+/.bundle/
+
+# Local test runs drop files into junit and tmp
+/junit/
+/tmp/
+acceptance/scripts/hosts.cfg
+/resources/locales.clj
+/resources/puppetlabs/puppetserver/*.class
+/dev-resources/i18n/bin

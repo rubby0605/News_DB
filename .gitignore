@@ -1,0 +1,78 @@
+# ==========================================
+# Whitelist .gitignore for home directory
+# Ignore everything, allow code projects only
+# ==========================================
+
+# Ignore everything by default
+/*
+
+# Allow this file
+!/.gitignore
+
+# ===== Desktop code projects =====
+!/Desktop/
+/Desktop/*
+!/Desktop/News_DB/
+!/Desktop/CamFresh_ios/
+!/Desktop/FS/
+!/Desktop/i/
+!/Desktop/cpp/
+!/Desktop/TFlearning-master/
+!/Desktop/puppet/
+!/Desktop/signl/
+!/Desktop/trade/
+!/Desktop/website/
+
+# ===== Top-level code directories =====
+!/code/
+!/getting-started/
+!/go/
+!/network_test/
+!/penetrationTest/
+!/python_automation/
+!/python_embeded_c/
+!/News_DB/
+
+# ===== Top-level code files =====
+!/greedy_func.cpp
+!/test_thread.cpp
+!/website_create.py
+!/Untitled.ipynb
+!/Untitled1.ipynb
+!/Untitled2.ipynb
+!/Untitled3.ipynb
+!/Untitled-Copy1.ipynb
+!/cam_fresh.py.ipynb
+!/char\ array_test.ipynb
+!/sentence.csv
+
+# ===== Common patterns to ignore within projects =====
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+**/*.py[cod]
+**/.ipynb_checkpoints/
+**/*.mp3
+**/*.log
+**/*.tmp
+**/*.swp
+**/*.o
+**/a.out
+**/Thumbs.db
+**/*.webarchive
+**/*.xls
+
+# Credentials and config (never commit)
+**/credentials.json
+**/notify_config.json
+**/openai_config.json
+**/optimized_weights.json
+
+# Large binary files
+**/*.tar
+**/*.tar.xz
+**/*.tar.gz
+**/*.zip
+**/*.mp4
+**/*.m4v
+**/*.so

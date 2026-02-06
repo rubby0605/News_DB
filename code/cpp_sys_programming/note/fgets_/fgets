@@ -1,0 +1,5 @@
+char *fgets(char *str, int n, FILE *stream)
+
+read "file stream " to "str" with " n number" or "one line"
+
+

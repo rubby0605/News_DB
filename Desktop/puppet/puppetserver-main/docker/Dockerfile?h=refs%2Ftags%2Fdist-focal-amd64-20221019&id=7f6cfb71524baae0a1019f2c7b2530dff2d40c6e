@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<title>Dockerfile - cloud-images/+oci/ubuntu-base - [no description]</title>
+<meta name='generator' content='cgit v1.1'/>
+<meta name='robots' content='index, nofollow'/>
+<link rel='stylesheet' type='text/css' href='/static/cgit-public.css'/>
+<link rel='shortcut icon' href='/favicon.ico'/>
+<link rel='alternate' title='Atom feed' href='http://git.launchpad.net/cloud-images/+oci/ubuntu-base/atom/Dockerfile?h=refs/tags/dist-focal-amd64-20221019' type='application/atom+xml'/>
+<link rel='vcs-git' href='git://git.launchpad.net/cloud-images/+oci/ubuntu-base' title='cloud-images/+oci/ubuntu-base Git repository'/>
+<link rel='vcs-git' href='git+ssh://git.launchpad.net/cloud-images/+oci/ubuntu-base' title='cloud-images/+oci/ubuntu-base Git repository'/>
+<link rel='vcs-git' href='https://git.launchpad.net/cloud-images/+oci/ubuntu-base' title='cloud-images/+oci/ubuntu-base Git repository'/>
+</head>
+<body>
+<div id='cgit'><table id='header'>
+<tr>
+<td class='logo' rowspan='2'><a href='/'><img src='/static/launchpad-logo.png' alt='cgit logo'/></a></td>
+<td class='main'><a href='/'>index</a> : <a title='cloud-images/+oci/ubuntu-base' href='/cloud-images/+oci/ubuntu-base/'>cloud-images/+oci/ubuntu-base</a></td><td class='form'><form method='get'>
+<input type='hidden' name='id' value='7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'/><select name='h' onchange='this.form.submit();'>
+<option value='_dist'>_dist</option>
+<option value='_dist-trusty'>_dist-trusty</option>
+<option value='_dist-xenial'>_dist-xenial</option>
+<option value='bionic-18.04'>bionic-18.04</option>
+<option value='dist'>dist</option>
+<option value='dist-amd64'>dist-amd64</option>
+<option value='dist-arm32v7'>dist-arm32v7</option>
+<option value='dist-arm64v8'>dist-arm64v8</option>
+<option value='dist-i386'>dist-i386</option>
+<option value='dist-ppc64le'>dist-ppc64le</option>
+<option value='dist-riscv64'>dist-riscv64</option>
+<option value='dist-s390x'>dist-s390x</option>
+<option value='docker-library'>docker-library</option>
+<option value='focal-20.04'>focal-20.04</option>
+<option value='groovy-20.10'>groovy-20.10</option>
+<option value='hirsute-21.04'>hirsute-21.04</option>
+<option value='impish-21.10'>impish-21.10</option>
+<option value='jammy-22.04'>jammy-22.04</option>
+<option value='kinetic-22.10'>kinetic-22.10</option>
+<option value='lunar-23.04'>lunar-23.04</option>
+<option value='main'>main</option>
+<option value='trusty-14.04'>trusty-14.04</option>
+<option value='xenial-16.04'>xenial-16.04</option>
+</select> <input type='submit' value='switch'/></form></td></tr>
+<tr><td class='sub'>[no description]</td><td class='sub right'></td></tr></table>
+<table class='tabs'><tr><td>
+<a href='/cloud-images/+oci/ubuntu-base/?h=refs/tags/dist-focal-amd64-20221019'>summary</a><a href='/cloud-images/+oci/ubuntu-base/refs/?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>refs</a><a href='/cloud-images/+oci/ubuntu-base/log/Dockerfile?h=refs/tags/dist-focal-amd64-20221019'>log</a><a class='active' href='/cloud-images/+oci/ubuntu-base/tree/Dockerfile?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>tree</a><a href='/cloud-images/+oci/ubuntu-base/commit/Dockerfile?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>commit</a><a href='/cloud-images/+oci/ubuntu-base/diff/Dockerfile?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>diff</a></td><td class='form'><form class='right' method='get' action='/cloud-images/+oci/ubuntu-base/log/Dockerfile'>
+<input type='hidden' name='h' value='refs/tags/dist-focal-amd64-20221019'/><input type='hidden' name='id' value='7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'/><select name='qt'>
+<option value='grep'>log msg</option>
+<option value='author'>author</option>
+<option value='committer'>committer</option>
+<option value='range'>range</option>
+</select>
+<input class='txt' type='text' size='10' name='q' value=''/>
+<input type='submit' value='search'/>
+</form>
+</td></tr></table>
+<div class='path'>path: <a href='/cloud-images/+oci/ubuntu-base/tree/?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>root</a>/<a href='/cloud-images/+oci/ubuntu-base/tree/Dockerfile?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>Dockerfile</a></div><div class='content'>blob: 9826afcc2103895625e8df7ec123f35a2165e15a (<a href='/cloud-images/+oci/ubuntu-base/plain/Dockerfile?h=refs/tags/dist-focal-amd64-20221019&amp;id=7f6cfb71524baae0a1019f2c7b2530dff2d40c6e'>plain</a>)
+<table summary='blob content' class='blob'>
+<tr><td class='linenumbers'><pre><a id='n1' href='#n1'>1</a>
+<a id='n2' href='#n2'>2</a>
+<a id='n3' href='#n3'>3</a>
+</pre></td>
+<td class='lines'><pre><code>FROM scratch
+ADD ubuntu-focal-oci-amd64-root.tar.gz /
+CMD ["bash"]
+</code></pre></td></tr></table>
+</div> <!-- class=content -->
+<div class='footer'>generated by <a href='https://git.zx2c4.com/cgit/about/'>cgit v1.1</a> at 2022-11-16 22:48:42 +0000</div>
+</div> <!-- id=cgit -->
+</body>
+</html>

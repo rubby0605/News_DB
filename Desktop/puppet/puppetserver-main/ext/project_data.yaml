@@ -1,0 +1,5 @@
+---
+project: 'puppetserver'
+
+repo_name: 'puppet7'
+nonfinal_repo_name: 'puppet7-nightly'
