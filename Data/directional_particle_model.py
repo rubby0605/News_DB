@@ -657,7 +657,7 @@ def main():
             if 'error' in r:
                 continue
 
-            emoji = '🟢' if r['direction'] == '漲' else '🔴' if r['direction'] == '跌' else '⚪'
+            emoji = '🔴' if r['direction'] == '漲' else '🟢' if r['direction'] == '跌' else '⚪'
             print(f"{emoji} {r['stock_name']}: ${r['current_price']} → ${r['predicted_price']} ({r['expected_change']:+.1f}%) [{r['direction']} {r['confidence']:.0%}]")
 
 

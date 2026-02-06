@@ -121,17 +121,15 @@ def extract_news_from_bing(keyword, stock_code):
         if bs is None:
             return news_list
 
-        # 尋找新聞卡片
+        # Strategy 1: 原始 CSS selectors
         news_cards = bs.find_all('div', class_='news-card')
         if not news_cards:
             news_cards = bs.find_all('div', class_='newsitem')
         if not news_cards:
-            # 嘗試其他選擇器
             news_cards = bs.find_all('a', class_='title')
 
-        for card in news_cards[:10]:  # 最多取 10 則
+        for card in news_cards[:10]:
             try:
-                # 嘗試提取標題
                 title_elem = card.find('a', class_='title') or card.find('a')
                 if title_elem:
                     news_title = clean_text(title_elem.get_text())
@@ -148,6 +146,28 @@ def extract_news_from_bing(keyword, stock_code):
             except Exception as e:
                 continue
 
+        # Strategy 2: 通用 fallback — 掃描所有 <a> 標籤
+        if not news_list:
+            seen_titles = set()
+            for a_tag in bs.find_all('a', href=True):
+                text = clean_text(a_tag.get_text())
+                href = a_tag['href']
+                if (text and len(text) > 15
+                        and keyword in text
+                        and href.startswith('http')
+                        and 'bing.com' not in href
+                        and text not in seen_titles):
+                    seen_titles.add(text)
+                    news_list.append({
+                        'title': text[:200],
+                        'url': href,
+                        'source': 'Bing',
+                        'stock_code': stock_code,
+                        'keyword': keyword
+                    })
+                    if len(news_list) >= 10:
+                        break
+
     except Exception as e:
         logger.error(f"Bing 抓取失敗 ({keyword}): {e}")
 
@@ -163,18 +183,17 @@ def extract_news_from_google(keyword, stock_code):
         if bs is None:
             return news_list
 
-        # Google 搜尋結果
-        results = bs.find_all('div', class_='BNeawe')
-
         seen_titles = set()
+
+        # Strategy 1: BNeawe selector
+        results = bs.find_all('div', class_='BNeawe')
         for result in results[:20]:
             try:
                 text = clean_text(result.get_text())
-                # 過濾太短或重複的
                 if text and len(text) > 15 and text not in seen_titles:
                     seen_titles.add(text)
                     news_list.append({
-                        'title': text[:200],  # 限制長度
+                        'title': text[:200],
                         'url': '',
                         'source': 'Google',
                         'stock_code': stock_code,
@@ -182,6 +201,32 @@ def extract_news_from_google(keyword, stock_code):
                     })
             except:
                 continue
+
+        # Strategy 2: fallback — 解析 /url?q= 重導向連結
+        if not news_list:
+            for a_tag in bs.find_all('a', href=True):
+                href = a_tag.get('href', '')
+                if '/url?q=' not in href:
+                    continue
+                # 提取實際 URL
+                match = re.search(r'/url\?q=([^&]+)', href)
+                if not match:
+                    continue
+                real_url = match.group(1)
+                if 'google.com' in real_url:
+                    continue
+                text = clean_text(a_tag.get_text())
+                if text and len(text) > 15 and text not in seen_titles:
+                    seen_titles.add(text)
+                    news_list.append({
+                        'title': text[:200],
+                        'url': real_url,
+                        'source': 'Google',
+                        'stock_code': stock_code,
+                        'keyword': keyword
+                    })
+                    if len(news_list) >= 10:
+                        break
 
     except Exception as e:
         logger.error(f"Google 抓取失敗 ({keyword}): {e}")

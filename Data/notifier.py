@@ -37,16 +37,21 @@ def set_discord_webhook(webhook_url):
     print(f"Discord Webhook 已設定！")
 
 
-def send_discord(message, title=None):
+def send_discord(message, title=None, channel='release'):
     """
     發送訊息到 Discord
 
     Args:
         message: 訊息內容
         title: 標題（可選）
+        channel: 'release'（正式頻道）或 'test'（測試頻道）
     """
     config = load_config()
-    webhook_url = config.get('discord_webhook')
+
+    if channel == 'test':
+        webhook_url = config.get('discord_webhook_test') or config.get('discord_webhook')
+    else:
+        webhook_url = config.get('discord_webhook')
 
     if not webhook_url:
         print("錯誤：尚未設定 Discord Webhook")
@@ -86,14 +91,18 @@ def send_discord(message, title=None):
         return False
 
 
-def send_daily_report(stock_data=None, news_count=0, predictions=None):
+def send_daily_report(stock_data=None, news_count=0, predictions=None,
+                      focus_stocks=None, premarket_predictions=None,
+                      channel='release'):
     """
-    發送每日報告
+    發送每日報告（13:30 收盤後）
 
     Args:
         stock_data: 股票資料 dict
         news_count: 收集的新聞數量
         predictions: 預測結果
+        focus_stocks: 今日焦點股 dict {code: {name, reason, news_count, sentiment_score}}
+        premarket_predictions: 盤前預測 dict {code: {name, predicted_price, direction, confidence, ...}}
     """
     now = datetime.datetime.now()
 
@@ -108,12 +117,42 @@ def send_daily_report(stock_data=None, news_count=0, predictions=None):
     if stock_data:
         lines.append(f"**監控股票:** {len(stock_data)} 檔")
 
+    # 今日焦點股摘要
+    if focus_stocks:
+        lines.append("")
+        lines.append(f"**⭐ 今日新聞焦點 {len(focus_stocks)} 檔：**")
+        medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
+        for i, (code, info) in enumerate(focus_stocks.items()):
+            medal = medals[i] if i < len(medals) else f'{i+1}.'
+            name = info.get('name', code)
+            reason = info.get('reason', '')
+
+            # 盤前預測方向
+            pred_info = ''
+            if premarket_predictions and code in premarket_predictions:
+                pred = premarket_predictions[code]
+                pred_info = f" | 預測{pred.get('direction', '?')} {pred.get('confidence', 0):.0%}"
+
+            lines.append(f"{medal} {name}({code}){pred_info}")
+            lines.append(f"   └ {reason}")
+
+    # AI 預測摘要
+    if premarket_predictions:
+        bull_count = sum(1 for p in premarket_predictions.values() if p.get('direction') == '漲')
+        bear_count = sum(1 for p in premarket_predictions.values() if p.get('direction') == '跌')
+        neutral_count = sum(1 for p in premarket_predictions.values() if p.get('direction') == '盤整')
+        lines.extend([
+            "",
+            "**AI 預測摘要:**",
+            f"- 看漲: {bull_count} 檔 | 看跌: {bear_count} 檔 | 盤整: {neutral_count} 檔",
+        ])
+
     if predictions:
         bull_count = sum(1 for p in predictions if p.get('prediction') == '漲')
         bear_count = sum(1 for p in predictions if p.get('prediction') == '跌')
         lines.extend([
             "",
-            "**AI 預測摘要:**",
+            "**ML 預測摘要:**",
             f"- 看漲: {bull_count} 檔",
             f"- 看跌: {bear_count} 檔",
         ])
@@ -131,7 +170,7 @@ def send_daily_report(stock_data=None, news_count=0, predictions=None):
 
     message = "\n".join(lines)
 
-    return send_discord(message, title="每日股票報告")
+    return send_discord(message, title="每日股票報告", channel=channel)
 
 
 def send_alert(stock_name, alert_type, message):
@@ -161,7 +200,7 @@ def test_notification():
 - 狀態: 連線成功
 """
 
-    return send_discord(test_msg, title="News_DB 通知測試")
+    return send_discord(test_msg, title="News_DB 通知測試", channel='test')
 
 
 if __name__ == "__main__":

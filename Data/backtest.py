@@ -369,7 +369,7 @@ def print_report(analysis):
 
     print("\n📈 各方向準確率:")
     for direction, data in analysis['direction_accuracy'].items():
-        emoji = '🟢' if direction == '漲' else '🔴' if direction == '跌' else '⚪'
+        emoji = '🔴' if direction == '漲' else '🟢' if direction == '跌' else '⚪'
         print(f"   {emoji} {direction}: {data['accuracy']:.1f}% ({data['count']} 次)")
 
     print("\n📋 各股票準確率:")
@@ -395,7 +395,7 @@ def send_backtest_report(analysis):
     ]
 
     for direction, data in analysis['direction_accuracy'].items():
-        emoji = '🟢' if direction == '漲' else '🔴' if direction == '跌' else '⚪'
+        emoji = '🔴' if direction == '漲' else '🟢' if direction == '跌' else '⚪'
         lines.append(f'{emoji} {direction}: {data["accuracy"]:.1f}% ({data["count"]} 次)')
 
     lines.append('')

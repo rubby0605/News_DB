@@ -255,17 +255,22 @@ def read_stock_fulllist(filename):
         else:
             dict_stock[mat[3]] = mat[0]
     return dict_stock
+OTC_STOCKS = {'8299'}
+
 def craw_realtime(stock_number):
     if len(stock_number) > 1:
-        stock_list = '|'.join('tse_{}.tw'.format(target) for target in stock_number)
-        len_stock = len(stock_list)
+        stock_list = '|'.join(
+            'otc_{}.tw'.format(target) if str(target) in OTC_STOCKS
+            else 'tse_{}.tw'.format(target)
+            for target in stock_number
+        )
     else:
         stock_list = str(stock_number)
     url = (
         "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch="+
         stock_list
     )
-    # ['c','n','z','tv','v','o','h','l','y'] 
+    # ['c','n','z','tv','v','o','h','l','y']
     #分別代表 ['股票代號','公司簡稱','當盤成交價','當盤成交量','累積成交量','開盤價','最高價','最低價','昨收價']
     data = json.loads(urlopen(url).read())
     return data
@@ -273,7 +278,7 @@ def craw_realtime(stock_number):
 """This cell defineds the plot_candles function"""
 
 def plot_candles(pricing, title=None, volume_bars=False, color_function=None, technicals=None):
-    """ Plots a candlestick chart using quantopian pricing data.
+    """Plots a candlestick chart using quantopian pricing data.
     
     Author: Daniel Treiman
     
@@ -499,18 +504,17 @@ def getPage(url):
     """
     Utilty function used to get a Beautiful Soup object from a given URL
     """
+    parsed = urlparse(url)
     headers = {
-    'host': 'www.google.co.kr',
+    'host': parsed.netloc,
     'method': 'GET',
     'referer': 'https://www.google.com/',
-    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/27.0.1453.93 Safari/537.36',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'}
-    proxies = {'http':'http://10.10.10.10:8765','https':'https://10.10.10.10:8765'}
     cookies = dict(uuid='b18f0e70-8705-470d-bc4b-09a8da617e15',UM_distinctid='15d188be71d50-013c49b12ec14a-3f73035d-100200-15d188be71ffd')
-    #res = requests.get(url, headers=headers, cookies=cookies)
-    
+
     try:
-        response=requests.get(url, headers=headers, cookies=cookies)
+        response=requests.get(url, headers=headers, cookies=cookies, timeout=15)
         response.encoding='utf-8'
         bs = BeautifulSoup(response.text, 'html.parser')
     except requests.exceptions.RequestException:
@@ -569,16 +573,18 @@ def scrapeNews(url):
 
 def scrapBingNews(keyword):
     url = r"https://www.bing.com/news/search?q=%22" + keyword + "%22&go=搜尋&qs=n&form=QBNT&sp=-1&pq=%22" + keyword
-    response=requests.get(url)
     bs = getPage(url)
+    if bs is None:
+        return url, None, '', None
     title = bs.find('title')
     body = bs.text
     return url, title, body, bs
 
 def scrapGoogleNews(keyword):
     url="https://www.google.com/search?q="+keyword+"&tbm=nws&start=%d"
-    response=requests.get(url)
     bs = getPage(url)
+    if bs is None:
+        return url, None, '', None
     title = bs.find('title')
     body = bs.text
     return url, title, body, bs
@@ -654,17 +660,25 @@ def scrape_stockclub(num):
 
 
 def get_stock_info(num):
-    url="https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_"+str(num)+".tw"
     headers = {
-    'host': 'www.google.co.kr',
+    'host': 'mis.twse.com.tw',
     'method': 'GET',
-    'referer': 'https://www.google.com/',
-    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/27.0.1453.93 Safari/537.36'}
-    proxies = {'http':'http://10.10.10.10:8765','https':'https://10.10.10.10:8765'}
+    'referer': 'https://mis.twse.com.tw/',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     cookies = dict(uuid='b18f0e70-8705-470d-bc4b-09a8da617e15',UM_distinctid='15d188be71d50-013c49b12ec14a-3f73035d-100200-15d188be71ffd')
-    res = requests.get(url, headers=headers, cookies=cookies)
-    data = res.json()
-    data2 = data['msgArray']
+
+    # 先試上市 (tse_)，若 msgArray 為空則試上櫃 (otc_)
+    for prefix in ['tse_', 'otc_']:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}{num}.tw"
+        res = requests.get(url, headers=headers, cookies=cookies, timeout=15)
+        data = res.json()
+        data2 = data.get('msgArray', [])
+        if data2 and data2[0].get('c') and 'n' in data2[0]:
+            break
+
+    if not data2 or not data2[0].get('c') or 'n' not in data2[0]:
+        return url, []
+
     dict2=data2[0]
     num=dict2['c']
     name = dict2['n']
@@ -676,10 +690,6 @@ def get_stock_info(num):
     lowestprice = dict2['l']
     yestprice = dict2['y']
     data3 = [num, name, deal, dealamount, wholedealamount, startprice, highestprice, lowestprice, yestprice]
-    #columns = ['c','n','z','tv','v','o','h','l','y']
-    #df = pd.DataFrame(data['msgArray'], columns=columns)
-    #df.columns = ['股票代號','公司簡稱','當盤成交價','當盤成交量','累積成交量','開盤價','最高價','最低價','昨收價']
-    #df.insert(9, "漲跌百分比", 0.0) 
     return url, data3
 
 
