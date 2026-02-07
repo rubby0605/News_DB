@@ -21,18 +21,8 @@ import json
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
 
-# 匯入自訂模組
-from newslib import (
-    read_stock_list,
-    getGoodInfo,
-    craw_realtime,
-    get_stock_info
-)
-from news_collector import collect_all_news
-from news_stock_selector import select_focus_stocks_from_news
-from notifier import send_daily_report, send_discord
-
-# 設定日誌
+# ⚠️ 必須在 import 自訂模組之前設定 logging，
+#    否則 news_collector.py 會先呼叫 basicConfig，搶走 root logger。
 LOG_FILE = os.path.join(SCRIPT_DIR, 'logs', f'stock_job_{datetime.date.today()}.log')
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
@@ -45,6 +35,17 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# 匯入自訂模組（必須在 logging 設定之後）
+from newslib import (
+    read_stock_list,
+    getGoodInfo,
+    craw_realtime,
+    get_stock_info
+)
+from news_collector import collect_all_news
+from news_stock_selector import select_focus_stocks_from_news
+from notifier import send_daily_report, send_discord
 
 # 儲存盤前預測結果（供盤後比較）
 PREMARKET_PREDICTIONS = {}
