@@ -1,0 +1,8 @@
+1. run to get DB and arrange them
+
+	A. Save 'wish list' as 'stock_list_less.txt'
+	B. run python script : get_stock_price2.py
+	C. run get_stock_info_from_DB.sh to split DB into Datas 
+
+2. get informed when stock price meet the goal
+	A. send_email_if_stock_good_enough.py 

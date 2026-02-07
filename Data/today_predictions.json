@@ -1,0 +1,276 @@
+{
+  "date": "2026-02-07",
+  "predictions": {
+    "3189": {
+      "name": "景碩",
+      "predicted_price": 251.09,
+      "direction": "觀望",
+      "confidence": 0.52,
+      "current_price": 252.0,
+      "is_focus": false,
+      "has_gpt": true
+    },
+    "2330": {
+      "name": "台積電",
+      "predicted_price": 1730.59,
+      "direction": "跌",
+      "confidence": 1.0,
+      "current_price": 1780.0,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2454": {
+      "name": "聯發科",
+      "predicted_price": 1695.11,
+      "direction": "跌",
+      "confidence": 0.7,
+      "current_price": 1710.0,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2308": {
+      "name": "台達電子",
+      "predicted_price": 1161.7,
+      "direction": "觀望",
+      "confidence": 0.52,
+      "current_price": 1160.0,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2344": {
+      "name": "華邦電子",
+      "predicted_price": 99.26,
+      "direction": "盤整",
+      "confidence": 0.62,
+      "current_price": 97.8,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2379": {
+      "name": "瑞昱",
+      "predicted_price": 467.65,
+      "direction": "盤整",
+      "confidence": 0.59,
+      "current_price": 472.5,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2480": {
+      "name": "敦陽科",
+      "predicted_price": 136.1,
+      "direction": "跌",
+      "confidence": 0.84,
+      "current_price": 137.5,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2498": {
+      "name": "宏達電",
+      "predicted_price": 44.45,
+      "direction": "盤整",
+      "confidence": 0.65,
+      "current_price": 44.9,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "3008": {
+      "name": "大立光電",
+      "predicted_price": 2329.47,
+      "direction": "觀望",
+      "confidence": 0.5,
+      "current_price": 2330.0,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "3028": {
+      "name": "增你強",
+      "predicted_price": 41.17,
+      "direction": "盤整",
+      "confidence": 0.61,
+      "current_price": 41.75,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "3045": {
+      "name": "台灣大",
+      "predicted_price": 105.99,
+      "direction": "漲",
+      "confidence": 0.67,
+      "current_price": 105.5,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2542": {
+      "name": "興富發",
+      "predicted_price": 37.45,
+      "direction": "跌",
+      "confidence": 0.79,
+      "current_price": 37.75,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2603": {
+      "name": "長榮",
+      "predicted_price": 187.54,
+      "direction": "觀望",
+      "confidence": 0.5,
+      "current_price": 187.5,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2609": {
+      "name": "陽明",
+      "predicted_price": 51.66,
+      "direction": "跌",
+      "confidence": 0.73,
+      "current_price": 52.2,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2610": {
+      "name": "華航",
+      "predicted_price": 23.53,
+      "direction": "漲",
+      "confidence": 1.0,
+      "current_price": 22.65,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2845": {
+      "name": "遠東銀",
+      "predicted_price": 12.23,
+      "direction": "跌",
+      "confidence": 0.9,
+      "current_price": 12.4,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2880": {
+      "name": "華南金",
+      "predicted_price": 34.65,
+      "direction": "漲",
+      "confidence": 0.99,
+      "current_price": 33.85,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2881": {
+      "name": "富邦金",
+      "predicted_price": 88.81,
+      "direction": "跌",
+      "confidence": 1.0,
+      "current_price": 92.4,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2313": {
+      "name": "華通",
+      "predicted_price": 178.96,
+      "direction": "漲",
+      "confidence": 0.85,
+      "current_price": 172.0,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2615": {
+      "name": "萬海",
+      "predicted_price": 73.13,
+      "direction": "跌",
+      "confidence": 0.86,
+      "current_price": 73.9,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2409": {
+      "name": "友達",
+      "predicted_price": 15.24,
+      "direction": "觀望",
+      "confidence": 0.52,
+      "current_price": 15.2,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2002": {
+      "name": "中鋼",
+      "predicted_price": 19.68,
+      "direction": "跌",
+      "confidence": 0.89,
+      "current_price": 20.4,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "6770": {
+      "name": "力積電",
+      "predicted_price": 66.41,
+      "direction": "漲",
+      "confidence": 0.85,
+      "current_price": 63.5,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "1440": {
+      "name": "南紡",
+      "predicted_price": 13.31,
+      "direction": "盤整",
+      "confidence": 0.64,
+      "current_price": 13.4,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2897": {
+      "name": "王道銀行",
+      "predicted_price": 9.43,
+      "direction": "漲",
+      "confidence": 0.9,
+      "current_price": 9.3,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2618": {
+      "name": "長榮航",
+      "predicted_price": 40.28,
+      "direction": "漲",
+      "confidence": 1.0,
+      "current_price": 38.6,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "3481": {
+      "name": "群創",
+      "predicted_price": 22.57,
+      "direction": "漲",
+      "confidence": 0.76,
+      "current_price": 21.8,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2303": {
+      "name": "聯電",
+      "predicted_price": 63.15,
+      "direction": "漲",
+      "confidence": 0.66,
+      "current_price": 61.9,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2312": {
+      "name": "金寶",
+      "predicted_price": 24.5,
+      "direction": "盤整",
+      "confidence": 0.58,
+      "current_price": 24.35,
+      "is_focus": false,
+      "has_gpt": false
+    },
+    "2882": {
+      "name": "國泰金",
+      "predicted_price": 74.3,
+      "direction": "跌",
+      "confidence": 0.97,
+      "current_price": 75.7,
+      "is_focus": false,
+      "has_gpt": false
+    }
+  },
+  "focus_stocks": {}
+}

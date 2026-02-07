@@ -1,0 +1,12 @@
+{
+  "weights": {
+    "foreign_large": 1929,
+    "foreign_medium": 1756,
+    "foreign_weight": 6.57,
+    "momentum_weight": 0.57,
+    "ema_weight": 2.89,
+    "momentum_threshold": 1.08
+  },
+  "accuracy": 0.55,
+  "updated": "2026-02-06T00:30:00"
+}

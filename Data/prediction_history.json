@@ -1,0 +1,544 @@
+{
+  "predictions": [
+    {
+      "date": "2026-02-06",
+      "stock_code": "3189",
+      "direction": "盤整",
+      "confidence": 0.57,
+      "bias": -0.77,
+      "actual_direction": "跌",
+      "actual_change": -7.969639468690702
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2330",
+      "direction": "跌",
+      "confidence": 0.76,
+      "bias": -0.78,
+      "actual_direction": "漲",
+      "actual_change": 0.84985835694051
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2454",
+      "direction": "漲",
+      "confidence": 0.72,
+      "bias": 1.1,
+      "actual_direction": "跌",
+      "actual_change": -3.389830508474576
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2308",
+      "direction": "觀望",
+      "confidence": 0.54,
+      "bias": 0.23,
+      "actual_direction": "漲",
+      "actual_change": 0.8695652173913043
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2344",
+      "direction": "觀望",
+      "confidence": 0.52,
+      "bias": -0.26,
+      "actual_direction": "跌",
+      "actual_change": -4.585365853658539
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2379",
+      "direction": "盤整",
+      "confidence": 0.57,
+      "bias": -1.02,
+      "actual_direction": "漲",
+      "actual_change": 2.0518358531317493
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2480",
+      "direction": "跌",
+      "confidence": 0.82,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.079136690647482
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2498",
+      "direction": "盤整",
+      "confidence": 0.64,
+      "bias": -1.02,
+      "actual_direction": "盤整",
+      "actual_change": 0.22321428571428892
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "3008",
+      "direction": "觀望",
+      "confidence": 0.5,
+      "bias": -0.02,
+      "actual_direction": "漲",
+      "actual_change": 1.3043478260869565
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "3028",
+      "direction": "盤整",
+      "confidence": 0.61,
+      "bias": -1.52,
+      "actual_direction": "跌",
+      "actual_change": -7.427937915742796
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "3045",
+      "direction": "漲",
+      "confidence": 0.68,
+      "bias": 0.48,
+      "actual_direction": "盤整",
+      "actual_change": 0.4761904761904762
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2542",
+      "direction": "跌",
+      "confidence": 0.78,
+      "bias": -0.81,
+      "actual_direction": "跌",
+      "actual_change": -0.9186351706036782
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2603",
+      "direction": "觀望",
+      "confidence": 0.51,
+      "bias": -0.01,
+      "actual_direction": "盤整",
+      "actual_change": 0.267379679144385
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2609",
+      "direction": "跌",
+      "confidence": 0.72,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.1363636363636256
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2610",
+      "direction": "漲",
+      "confidence": 1.0,
+      "bias": 3.86,
+      "actual_direction": "盤整",
+      "actual_change": -0.4395604395604458
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2845",
+      "direction": "跌",
+      "confidence": 0.9,
+      "bias": -1.4,
+      "actual_direction": "盤整",
+      "actual_change": -0.4016064257028027
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2880",
+      "direction": "漲",
+      "confidence": 0.99,
+      "bias": 2.36,
+      "actual_direction": "漲",
+      "actual_change": 0.744047619047619
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2881",
+      "direction": "跌",
+      "confidence": 1.0,
+      "bias": -3.88,
+      "actual_direction": "跌",
+      "actual_change": -1.176470588235288
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2313",
+      "direction": "漲",
+      "confidence": 0.86,
+      "bias": 4.11,
+      "actual_direction": "跌",
+      "actual_change": -2.272727272727273
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2615",
+      "direction": "跌",
+      "confidence": 0.84,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.2032085561497212
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2409",
+      "direction": "觀望",
+      "confidence": 0.5,
+      "bias": 0.23,
+      "actual_direction": "跌",
+      "actual_change": -2.5641025641025665
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2002",
+      "direction": "跌",
+      "confidence": 0.88,
+      "bias": -3.53,
+      "actual_direction": "跌",
+      "actual_change": -2.625298329355612
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "6770",
+      "direction": "漲",
+      "confidence": 0.85,
+      "bias": 4.5,
+      "actual_direction": "漲",
+      "actual_change": 1.114649681528667
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "1440",
+      "direction": "跌",
+      "confidence": 0.68,
+      "bias": -0.77,
+      "actual_direction": "跌",
+      "actual_change": -2.1897810218978027
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2897",
+      "direction": "漲",
+      "confidence": 0.92,
+      "bias": 1.36,
+      "actual_direction": "漲",
+      "actual_change": 0.9771986970684022
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2618",
+      "direction": "漲",
+      "confidence": 1.0,
+      "bias": 4.32,
+      "actual_direction": "盤整",
+      "actual_change": 0.3901170351105294
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "3481",
+      "direction": "漲",
+      "confidence": 0.77,
+      "bias": 3.49,
+      "actual_direction": "盤整",
+      "actual_change": 0.0
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2303",
+      "direction": "漲",
+      "confidence": 0.65,
+      "bias": 1.99,
+      "actual_direction": "漲",
+      "actual_change": 0.6504065040650383
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2312",
+      "direction": "盤整",
+      "confidence": 0.57,
+      "bias": 0.69,
+      "actual_direction": "跌",
+      "actual_change": -3.7549407114624476
+    },
+    {
+      "date": "2026-02-06",
+      "stock_code": "2882",
+      "direction": "跌",
+      "confidence": 0.97,
+      "bias": -1.9,
+      "actual_direction": "盤整",
+      "actual_change": -0.39473684210525944
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "3189",
+      "direction": "觀望",
+      "confidence": 0.52,
+      "bias": -0.27,
+      "actual_direction": "跌",
+      "actual_change": -7.969639468690702
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2330",
+      "direction": "跌",
+      "confidence": 1.0,
+      "bias": -2.78,
+      "actual_direction": "漲",
+      "actual_change": 0.84985835694051
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2454",
+      "direction": "跌",
+      "confidence": 0.7,
+      "bias": -0.9,
+      "actual_direction": "跌",
+      "actual_change": -3.389830508474576
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2308",
+      "direction": "觀望",
+      "confidence": 0.52,
+      "bias": 0.23,
+      "actual_direction": "漲",
+      "actual_change": 0.8695652173913043
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2344",
+      "direction": "盤整",
+      "confidence": 0.62,
+      "bias": 1.49,
+      "actual_direction": "跌",
+      "actual_change": -4.585365853658539
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2379",
+      "direction": "盤整",
+      "confidence": 0.59,
+      "bias": -1.02,
+      "actual_direction": "漲",
+      "actual_change": 2.0518358531317493
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2480",
+      "direction": "跌",
+      "confidence": 0.84,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.079136690647482
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2498",
+      "direction": "盤整",
+      "confidence": 0.65,
+      "bias": -1.02,
+      "actual_direction": "盤整",
+      "actual_change": 0.22321428571428892
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "3008",
+      "direction": "觀望",
+      "confidence": 0.5,
+      "bias": -0.02,
+      "actual_direction": "漲",
+      "actual_change": 1.3043478260869565
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "3028",
+      "direction": "盤整",
+      "confidence": 0.61,
+      "bias": -1.52,
+      "actual_direction": "跌",
+      "actual_change": -7.427937915742796
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "3045",
+      "direction": "漲",
+      "confidence": 0.67,
+      "bias": 0.48,
+      "actual_direction": "盤整",
+      "actual_change": 0.4761904761904762
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2542",
+      "direction": "跌",
+      "confidence": 0.79,
+      "bias": -0.81,
+      "actual_direction": "跌",
+      "actual_change": -0.9186351706036782
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2603",
+      "direction": "觀望",
+      "confidence": 0.5,
+      "bias": -0.01,
+      "actual_direction": "盤整",
+      "actual_change": 0.267379679144385
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2609",
+      "direction": "跌",
+      "confidence": 0.73,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.1363636363636256
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2610",
+      "direction": "漲",
+      "confidence": 1.0,
+      "bias": 3.86,
+      "actual_direction": "盤整",
+      "actual_change": -0.4395604395604458
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2845",
+      "direction": "跌",
+      "confidence": 0.9,
+      "bias": -1.4,
+      "actual_direction": "盤整",
+      "actual_change": -0.4016064257028027
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2880",
+      "direction": "漲",
+      "confidence": 0.99,
+      "bias": 2.36,
+      "actual_direction": "漲",
+      "actual_change": 0.744047619047619
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2881",
+      "direction": "跌",
+      "confidence": 1.0,
+      "bias": -3.88,
+      "actual_direction": "跌",
+      "actual_change": -1.176470588235288
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2313",
+      "direction": "漲",
+      "confidence": 0.85,
+      "bias": 4.11,
+      "actual_direction": "跌",
+      "actual_change": -2.272727272727273
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2615",
+      "direction": "跌",
+      "confidence": 0.86,
+      "bias": -1.02,
+      "actual_direction": "跌",
+      "actual_change": -1.2032085561497212
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2409",
+      "direction": "觀望",
+      "confidence": 0.52,
+      "bias": 0.23,
+      "actual_direction": "跌",
+      "actual_change": -2.5641025641025665
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2002",
+      "direction": "跌",
+      "confidence": 0.89,
+      "bias": -3.53,
+      "actual_direction": "跌",
+      "actual_change": -2.625298329355612
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "6770",
+      "direction": "漲",
+      "confidence": 0.85,
+      "bias": 4.5,
+      "actual_direction": "漲",
+      "actual_change": 1.114649681528667
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "1440",
+      "direction": "盤整",
+      "confidence": 0.64,
+      "bias": -0.77,
+      "actual_direction": "跌",
+      "actual_change": -2.1897810218978027
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2897",
+      "direction": "漲",
+      "confidence": 0.9,
+      "bias": 1.36,
+      "actual_direction": "漲",
+      "actual_change": 0.9771986970684022
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2618",
+      "direction": "漲",
+      "confidence": 1.0,
+      "bias": 4.32,
+      "actual_direction": "盤整",
+      "actual_change": 0.3901170351105294
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "3481",
+      "direction": "漲",
+      "confidence": 0.76,
+      "bias": 3.49,
+      "actual_direction": "盤整",
+      "actual_change": 0.0
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2303",
+      "direction": "漲",
+      "confidence": 0.66,
+      "bias": 1.99,
+      "actual_direction": "漲",
+      "actual_change": 0.6504065040650383
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2312",
+      "direction": "盤整",
+      "confidence": 0.58,
+      "bias": 0.69,
+      "actual_direction": "跌",
+      "actual_change": -3.7549407114624476
+    },
+    {
+      "date": "2026-02-07",
+      "stock_code": "2882",
+      "direction": "跌",
+      "confidence": 0.97,
+      "bias": -1.9,
+      "actual_direction": "盤整",
+      "actual_change": -0.39473684210525944
+    }
+  ]
+}
