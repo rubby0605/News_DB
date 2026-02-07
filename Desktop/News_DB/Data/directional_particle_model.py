@@ -751,6 +751,22 @@ class DirectionalParticleModel:
         # 預測漲跌幅
         expected_change = (predicted_mean - current_price) / current_price * 100
 
+        # 風險警示
+        warnings = []
+        if len(history) < 10:
+            warnings.append('歷史資料不足')
+        if volatility > 4.0:
+            warnings.append('極高波動')
+        elif volatility > 3.0:
+            warnings.append('高波動風險')
+        # 有效信號數（排除中性與無資料）
+        effective_signals = sum(
+            1 for v in signals.values()
+            if isinstance(v, str) and '中性' not in v and '無' not in v
+        )
+        if effective_signals < 3:
+            warnings.append('有效訊號不足')
+
         return {
             'stock_code': stock_code,
             'stock_name': stock_name or stock_code,
@@ -764,7 +780,8 @@ class DirectionalParticleModel:
             'volatility': round(volatility, 2),
             'signals': signals,
             'prob_up': round(prob_up, 2),
-            'prob_down': round(prob_down, 2)
+            'prob_down': round(prob_down, 2),
+            'warnings': warnings,
         }
 
 

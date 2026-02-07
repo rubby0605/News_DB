@@ -32,13 +32,26 @@ BEAR_KEYWORDS = [
 ]
 
 
+def _get_keywords():
+    """取得關鍵字（優先使用 GA 優化版）"""
+    try:
+        from keyword_optimizer import load_optimized_keywords
+        result = load_optimized_keywords()
+        if result:
+            return result  # (bull_keywords, bear_keywords)
+    except Exception:
+        pass
+    return BULL_KEYWORDS, BEAR_KEYWORDS
+
+
 def keyword_score(text):
     """
     計算關鍵字分數
     正分 = 看漲，負分 = 看跌
     """
-    bull_count = sum(1 for kw in BULL_KEYWORDS if kw in text)
-    bear_count = sum(1 for kw in BEAR_KEYWORDS if kw in text)
+    bull_kw, bear_kw = _get_keywords()
+    bull_count = sum(1 for kw in bull_kw if kw in text)
+    bear_count = sum(1 for kw in bear_kw if kw in text)
 
     # 計算分數 (-1 到 1)
     total = bull_count + bear_count

@@ -159,6 +159,176 @@ def calc_correction_factor():
     }
 
 
+def get_tracking_metrics(stock_code=None):
+    """
+    取得追蹤指標（供 embed 使用）
+
+    Args:
+        stock_code: 篩選特定股票（None = 全部）
+
+    Returns:
+        dict: {
+            'today_predictions': int,
+            'today_correct': int,
+            'today_hit_rate': float,
+            'recent_20_hit_rate': float,
+            'max_consecutive_loss': int,
+            'current_streak': int,  # 正=連對, 負=連錯
+        }
+    """
+    history = load_history()
+    today = datetime.date.today().isoformat()
+
+    preds = history['predictions']
+    if stock_code:
+        preds = [p for p in preds if p['stock_code'] == stock_code]
+
+    # 今日指標
+    today_preds = [p for p in preds if p['date'] == today and p['direction'] in ('漲', '跌')]
+    today_with_outcome = [p for p in today_preds if p['actual_direction'] is not None]
+    today_correct = sum(
+        1 for p in today_with_outcome
+        if p['direction'] == p['actual_direction'] or
+        (p['direction'] == '漲' and p.get('actual_change', 0) and p['actual_change'] > 0) or
+        (p['direction'] == '跌' and p.get('actual_change', 0) and p['actual_change'] < 0)
+    )
+
+    # 近 20 筆有結果的預測
+    recent_with_outcome = [
+        p for p in preds
+        if p['actual_direction'] is not None and p['direction'] in ('漲', '跌')
+    ][-20:]
+
+    recent_correct = sum(
+        1 for p in recent_with_outcome
+        if p['direction'] == p['actual_direction'] or
+        (p['direction'] == '漲' and p.get('actual_change', 0) and p['actual_change'] > 0) or
+        (p['direction'] == '跌' and p.get('actual_change', 0) and p['actual_change'] < 0)
+    )
+
+    # 連勝/連敗 + 最大連錯
+    max_loss = 0
+    current_loss = 0
+    current_streak = 0  # 正=連對, 負=連錯
+
+    for p in recent_with_outcome:
+        correct = (
+            p['direction'] == p['actual_direction'] or
+            (p['direction'] == '漲' and p.get('actual_change', 0) and p['actual_change'] > 0) or
+            (p['direction'] == '跌' and p.get('actual_change', 0) and p['actual_change'] < 0)
+        )
+        if correct:
+            current_loss = 0
+            if current_streak >= 0:
+                current_streak += 1
+            else:
+                current_streak = 1
+        else:
+            current_loss += 1
+            max_loss = max(max_loss, current_loss)
+            if current_streak <= 0:
+                current_streak -= 1
+            else:
+                current_streak = -1
+
+    return {
+        'today_predictions': len(today_preds),
+        'today_correct': today_correct,
+        'today_hit_rate': today_correct / len(today_with_outcome) if today_with_outcome else 0,
+        'recent_20_hit_rate': recent_correct / len(recent_with_outcome) if recent_with_outcome else 0,
+        'max_consecutive_loss': max_loss,
+        'current_streak': current_streak,
+    }
+
+
+def calc_advanced_metrics(days=20):
+    """
+    計算進階績效指標
+
+    Args:
+        days: 回看天數
+
+    Returns:
+        dict: {
+            'coverage': float,       # 出手率 = 有信心預測 / 全部機會
+            'precision': float,      # 出手準度 = 出手正確 / 出手次數
+            'overall_accuracy': float,
+            'max_drawdown': int,     # 最大連續錯誤
+            'current_streak': int,
+            'by_direction': {
+                '漲': {'count', 'correct', 'accuracy'},
+                '跌': {'count', 'correct', 'accuracy'},
+            }
+        }
+    """
+    history = load_history()
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+    recent = [p for p in history['predictions'] if p['date'] >= cutoff]
+
+    # 出手率: 有信心預測（漲/跌） / 全部（含盤整/觀望）
+    total_opportunities = len(recent)
+    confident_preds = [p for p in recent if p['direction'] in ('漲', '跌')]
+    coverage = len(confident_preds) / total_opportunities if total_opportunities else 0
+
+    # 有結果的出手
+    with_outcome = [p for p in confident_preds if p['actual_direction'] is not None]
+
+    def _is_correct(p):
+        return (
+            p['direction'] == p['actual_direction'] or
+            (p['direction'] == '漲' and p.get('actual_change', 0) and p['actual_change'] > 0) or
+            (p['direction'] == '跌' and p.get('actual_change', 0) and p['actual_change'] < 0)
+        )
+
+    correct_count = sum(1 for p in with_outcome if _is_correct(p))
+    precision = correct_count / len(with_outcome) if with_outcome else 0
+
+    # 全部有結果的預測（含觀望、盤整）
+    all_with_outcome = [p for p in recent if p['actual_direction'] is not None]
+    all_correct = sum(
+        1 for p in all_with_outcome
+        if p['direction'] == p['actual_direction'] or
+        (p['direction'] == '漲' and p.get('actual_change', 0) and p['actual_change'] > 0) or
+        (p['direction'] == '跌' and p.get('actual_change', 0) and p['actual_change'] < 0)
+    )
+    overall_accuracy = all_correct / len(all_with_outcome) if all_with_outcome else 0
+
+    # 最大連錯 + 目前連勝/連敗
+    max_dd = 0
+    current_loss = 0
+    streak = 0
+
+    for p in with_outcome:
+        if _is_correct(p):
+            current_loss = 0
+            streak = streak + 1 if streak >= 0 else 1
+        else:
+            current_loss += 1
+            max_dd = max(max_dd, current_loss)
+            streak = streak - 1 if streak <= 0 else -1
+
+    # 方向分佈
+    by_direction = {}
+    for d in ('漲', '跌'):
+        d_preds = [p for p in with_outcome if p['direction'] == d]
+        d_correct = sum(1 for p in d_preds if _is_correct(p))
+        by_direction[d] = {
+            'count': len(d_preds),
+            'correct': d_correct,
+            'accuracy': d_correct / len(d_preds) if d_preds else 0,
+        }
+
+    return {
+        'coverage': coverage,
+        'precision': precision,
+        'overall_accuracy': overall_accuracy,
+        'max_drawdown': max_dd,
+        'current_streak': streak,
+        'by_direction': by_direction,
+    }
+
+
 if __name__ == "__main__":
     print("預測歷史追蹤模組")
     history = load_history()
@@ -168,3 +338,9 @@ if __name__ == "__main__":
 
     correction = calc_correction_factor()
     print(f"修正因子: {correction}")
+
+    metrics = get_tracking_metrics()
+    print(f"追蹤指標: {metrics}")
+
+    advanced = calc_advanced_metrics()
+    print(f"進階指標: {advanced}")

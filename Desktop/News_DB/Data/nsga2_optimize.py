@@ -537,7 +537,7 @@ def main():
 測試月份: {months[0]} ~ {months[-1]}
 耗時: {elapsed:.1f} 秒"""
 
-        send_discord(message, title='NSGA-II 優化結果')
+        send_discord(message, title='NSGA-II 優化結果', channel='test')
         print("\n已發送到 Discord!")
     else:
         print("\n(加 --discord 參數才會發送到 Discord)")

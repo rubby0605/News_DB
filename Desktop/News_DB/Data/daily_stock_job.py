@@ -15,23 +15,14 @@ import time
 import datetime
 import random
 import logging
+import json
 
 # 設定工作目錄為腳本所在位置
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
 
-# 匯入自訂模組
-from newslib import (
-    read_stock_list,
-    getGoodInfo,
-    craw_realtime,
-    get_stock_info
-)
-from news_collector import collect_all_news
-from news_stock_selector import select_focus_stocks_from_news
-from notifier import send_daily_report, send_discord
-
-# 設定日誌
+# ⚠️ 必須在 import 自訂模組之前設定 logging，
+#    否則 news_collector.py 會先呼叫 basicConfig，搶走 root logger。
 LOG_FILE = os.path.join(SCRIPT_DIR, 'logs', f'stock_job_{datetime.date.today()}.log')
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
@@ -45,15 +36,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 匯入自訂模組（必須在 logging 設定之後）
+from newslib import (
+    read_stock_list,
+    getGoodInfo,
+    craw_realtime,
+    get_stock_info
+)
+from news_collector import collect_all_news
+from news_stock_selector import select_focus_stocks_from_news
+from notifier import (
+    send_daily_report, send_discord, send_multi_embed,
+    build_prediction_embed, format_signal_breakdown
+)
+from notification_guard import NotificationGuard
+from broadcast_logger import log_broadcast
+from prediction_history import get_tracking_metrics
+from ai_trader import (
+    AITrader, build_buy_embed, build_sell_embed, build_daily_portfolio_embed,
+    build_buy_signal_embed, build_sell_signal_embed
+)
+
 # 儲存盤前預測結果（供盤後比較）
 PREMARKET_PREDICTIONS = {}
+PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, 'today_predictions.json')
 
 # 盤前新聞選股結果（精追 5 檔）
 # {'2330': {'name': '台積電', 'reason': '...', 'news_count': N, 'sentiment_score': 0.8}, ...}
 FOCUS_STOCKS = {}
+FOCUS_STOCKS_FILE = os.path.join(SCRIPT_DIR, 'today_focus_stocks.json')
 
 # Discord 頻道：'release' 正式 / 'test' 測試
 DISCORD_CHANNEL = 'release'
+
+# AI 紙上交易系統（100 萬虛擬資金）
+AI_TRADER = AITrader(initial_capital=1_000_000)
+AI_TRADE_CHANNEL = 'test'
+
+
+def save_predictions_to_file():
+    """將盤前預測存到 JSON 檔（供盤後讀取）"""
+    data = {
+        'date': datetime.date.today().isoformat(),
+        'predictions': PREMARKET_PREDICTIONS,
+        'focus_stocks': FOCUS_STOCKS,
+    }
+    with open(PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info(f"預測結果已存檔 ({len(PREMARKET_PREDICTIONS)} 檔)")
+
+
+def load_predictions_from_file():
+    """從 JSON 檔讀取今日盤前預測"""
+    global PREMARKET_PREDICTIONS, FOCUS_STOCKS
+    if not os.path.exists(PREDICTIONS_FILE):
+        return False
+    try:
+        with open(PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('date') != datetime.date.today().isoformat():
+            logger.warning("預測檔案非今日資料，跳過")
+            return False
+        PREMARKET_PREDICTIONS = data.get('predictions', {})
+        if not FOCUS_STOCKS and data.get('focus_stocks'):
+            FOCUS_STOCKS = data['focus_stocks']
+        logger.info(f"從檔案載入 {len(PREMARKET_PREDICTIONS)} 筆盤前預測")
+        return True
+    except Exception as e:
+        logger.error(f"載入預測檔案失敗: {e}")
+        return False
 
 
 def select_focus_stocks():
@@ -152,6 +203,9 @@ def send_premarket_analysis():
                     'current_price': result['current_price'],
                     'is_focus': result['stock_code'] in focus_codes,
                     'has_gpt': gpt_data is not None,
+                    'bias': result.get('bias', 0),
+                    'signals': result.get('signals', {}),
+                    'warnings': result.get('warnings', []),
                 }
                 # 記錄預測（供系統偏差自動修正用）
                 try:
@@ -244,6 +298,9 @@ def send_premarket_analysis():
         send_discord(message, title='盤前 AI 分析', channel=DISCORD_CHANNEL)
         logger.info(f"盤前分析完成，預測 {len(results)} 檔股票")
 
+        # 存檔供盤後比對
+        save_predictions_to_file()
+
     except Exception as e:
         logger.error(f"盤前分析失敗: {e}")
 
@@ -255,8 +312,12 @@ def send_postmarket_analysis():
     global PREMARKET_PREDICTIONS
     logger.info("=== 開始盤後誤差分析 ===")
 
+    # 記憶體沒有預測資料 → 從檔案載入
     if not PREMARKET_PREDICTIONS:
-        logger.warning("沒有盤前預測資料，跳過誤差分析")
+        load_predictions_from_file()
+
+    if not PREMARKET_PREDICTIONS:
+        logger.warning("沒有盤前預測資料（記憶體和檔案都沒有），跳過誤差分析")
         return
 
     try:
@@ -296,6 +357,20 @@ def send_postmarket_analysis():
                 try:
                     from prediction_history import record_outcome
                     record_outcome(code, actual_direction, actual_change)
+                except Exception:
+                    pass
+
+                # 廣播日誌回填實際結果
+                try:
+                    from broadcast_logger import update_outcomes
+                    update_outcomes(
+                        datetime.date.today().isoformat(),
+                        {code: {
+                            'actual_direction': actual_direction,
+                            'actual_close': actual_price,
+                            'actual_change': actual_change,
+                        }}
+                    )
                 except Exception:
                     pass
 
@@ -347,9 +422,10 @@ def send_postmarket_analysis():
         focus_results = [r for r in results if r['code'] in focus_codes or r['name'] in focus_names]
         other_results = [r for r in results if r['code'] not in focus_codes and r['name'] not in focus_names]
 
-        # 焦點股票準確率
-        focus_correct = sum(1 for r in focus_results if r['correct'])
-        focus_total = len(focus_results)
+        # 焦點股票準確率（排除觀望）
+        focus_judged = [r for r in focus_results if r['correct'] is not None]
+        focus_correct = sum(1 for r in focus_judged if r['correct'])
+        focus_total = len(focus_judged)
         focus_accuracy = focus_correct / focus_total * 100 if focus_total > 0 else 0
 
         # 按誤差排序
@@ -371,13 +447,13 @@ def send_postmarket_analysis():
             lines.append('**⭐ 新聞焦點股表現：**')
             for r in focus_results:
                 emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
-                status = '✓' if r['correct'] else '✗'
-                lines.append(f"{emoji} {r['name']}: 預測${r['predicted']:.0f}→實際${r['actual']:.0f} ({r['actual_change']:+.1f}%) 誤差{r['error']:.1f}% {status}")
+                status = '✓' if r['correct'] else ('—' if r['correct'] is None else '✗')
+                lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']}→實際${r['actual']:.0f} ({r['actual_change']:+.1f}%) 誤差{r['error']:.1f}% {status}")
 
         lines.append('')
         lines.append('**✅ 預測正確 TOP 5：**')
 
-        correct_results = [r for r in results if r['correct']]
+        correct_results = [r for r in results if r['correct'] is True]
         for r in correct_results[:5]:
             emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
             focus_tag = ' ⭐' if (r['code'] in focus_codes or r['name'] in focus_names) else ''
@@ -386,26 +462,72 @@ def send_postmarket_analysis():
         lines.append('')
         lines.append('**❌ 預測錯誤：**')
 
-        wrong_results = [r for r in results if not r['correct']]
+        wrong_results = [r for r in results if r['correct'] is False]
         for r in wrong_results[:5]:
             emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
             focus_tag = ' ⭐' if (r['code'] in focus_codes or r['name'] in focus_names) else ''
             lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']} → 實際{r['actual_change']:+.1f}% ✗{focus_tag}")
 
+        # 觀望結果
+        wait_results = [r for r in results if r['correct'] is None]
+        if wait_results:
+            lines.append('')
+            lines.append(f'**⏸️ 觀望 {len(wait_results)} 檔（不計入準確率）：**')
+            for r in wait_results[:5]:
+                emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
+                lines.append(f"{emoji} {r['name']}: 實際{r['actual_change']:+.1f}%")
+
         # 統計
         avg_error = sum(r['error'] for r in results) / len(results) if results else 0
         lines.append('')
         lines.append(f'**📈 平均價格誤差: {avg_error:.1f}%**')
+        if wait_results:
+            lines.append(f'**⏸️ 觀望: {len(wait_results)} 檔** | 有效預測: {total_compared} 檔')
 
         message = '\n'.join(lines)
         send_discord(message, title='盤後誤差分析', channel=DISCORD_CHANNEL)
         logger.info(f"盤後分析完成，準確率 {accuracy:.1f}%")
+
+        # 發送每日績效 Embed
+        send_daily_metrics_summary()
+
+        # AI 紙上交易日報
+        try:
+            closing_prices = {}
+            for item in data['msgArray']:
+                code = item.get('c', '')
+                price_str = item.get('z', '-')
+                if price_str != '-':
+                    closing_prices[code] = float(price_str)
+
+            portfolio_embed = build_daily_portfolio_embed(AI_TRADER, closing_prices)
+            from notifier import send_discord_embed
+            send_discord_embed(portfolio_embed, channel=AI_TRADE_CHANNEL)
+            logger.info("AI 每日交易日報已發送")
+        except Exception as e:
+            logger.error(f"AI 交易日報發送失敗: {e}")
 
         # 清空預測資料
         PREMARKET_PREDICTIONS = {}
 
     except Exception as e:
         logger.error(f"盤後分析失敗: {e}")
+
+
+def send_daily_metrics_summary():
+    """盤後發送每日績效追蹤 Embed"""
+    try:
+        from prediction_history import get_tracking_metrics, calc_advanced_metrics
+        from notifier import build_metrics_embed, send_discord_embed
+
+        today_metrics = get_tracking_metrics()
+        advanced_metrics = calc_advanced_metrics()
+
+        embed = build_metrics_embed(today_metrics, advanced_metrics)
+        send_discord_embed(embed, channel=DISCORD_CHANNEL)
+        logger.info("每日績效 Embed 已發送")
+    except Exception as e:
+        logger.error(f"每日績效 Embed 發送失敗: {e}")
 
 
 def fetch_fundamental_data():
@@ -446,14 +568,20 @@ def fetch_fundamental_data():
 def send_prediction_notification(stock_prices, clf, vectorizer, now):
     """
     發送股票預測通知到 Discord（雙軌模式）
-    - 5 檔精追：粒子模型預測 + GPT 新聞情緒
-    - 其餘輕追：只列出即時漲跌幅
+    - 5 檔精追：結構化 Embed（粒子模型 + GPT + 訊號分解 + 風險）
+    - 其餘輕追：只列出即時漲跌幅（markdown）
     """
     logger.info("發送 15 分鐘預測通知...")
 
     # 焦點股票（從全域 FOCUS_STOCKS 取得）
     focus_codes = set(FOCUS_STOCKS.keys()) if FOCUS_STOCKS else set()
     focus_names = {v['name'] for v in FOCUS_STOCKS.values()} if FOCUS_STOCKS else {'群聯', '景碩'}
+
+    # 通知去重 guard
+    guard = NotificationGuard()
+
+    # 取得追蹤指標
+    tracking_metrics = get_tracking_metrics()
 
     # 載入粒子模型（只對焦點股票做預測，省 API 費用）
     particle_predictions = {}
@@ -516,51 +644,96 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
     focus_changes = [s for s in stock_changes if s['is_focus']]
     other_changes = [s for s in stock_changes if not s['is_focus']]
 
-    # 建立通知
-    lines = [
-        f"**{now.strftime('%H:%M')} 盤中快報**",
-    ]
-
-    # === 精追區：焦點 5 檔 ===
-    lines.append("")
-    lines.append("**⭐ 新聞焦點股：**")
+    # === 精追區：焦點股 → 結構化 Embed ===
+    focus_embeds = []
     for s in focus_changes:
-        emoji = "🟢" if s['change_pct'] < 0 else "🔴" if s['change_pct'] > 0 else "⚪"
-
-        # 粒子模型 AI 預測
-        ai_tag = ""
         pred = particle_predictions.get(s['name'])
-        if pred:
-            ai_tag = f" [AI預測: {pred['direction']} {pred['confidence']:.0%}]"
+        if not pred:
+            continue
 
-        lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%){ai_tag}")
+        code = pred.get('stock_code', s['code'])
+        direction = pred.get('direction', '觀望')
+        confidence = pred.get('confidence', 0)
 
-        # GPT 情緒
+        # 通知去重檢查
+        if not guard.should_notify(code, direction, confidence):
+            logger.info(f"通知被壓抑: {s['name']}({code}) {direction} {confidence:.0%}")
+            continue
+
+        # 風險警示
+        risk_warnings = list(pred.get('warnings', []))
+        volatility = pred.get('volatility', 0)
+        if volatility > 3.0 and '高波動風險' not in risk_warnings and '極高波動' not in risk_warnings:
+            risk_warnings.append('高波動風險')
+        if confidence < 0.6:
+            risk_warnings.append('信心度偏低')
+        # 方向與大盤背離
+        if s['change_pct'] > 0.5 and direction == '跌':
+            risk_warnings.append('與盤中走勢背離')
+        elif s['change_pct'] < -0.5 and direction == '漲':
+            risk_warnings.append('與盤中走勢背離')
+
+        # GPT 新聞佐證
+        news_evidence = []
         gpt = gpt_sentiments.get(s['name'])
         if gpt:
-            sentiment = gpt.get('sentiment', '中性')
-            confidence = gpt.get('confidence', 0)
-            reason = gpt.get('reason', '')
-            lines.append(f"   └ GPT情緒: {sentiment} ({confidence:.0%}) - {reason}")
+            news_evidence.append({
+                'title': gpt.get('reason', 'GPT 分析')[:50],
+                'sentiment': gpt.get('sentiment', '中性'),
+                'confidence': gpt.get('confidence', 0),
+            })
 
-    # === 輕追區：其餘股票只列漲跌 ===
-    lines.append("")
-    lines.append("**📊 其餘漲跌：**")
+        # 更新當前價格到 prediction
+        pred_with_price = dict(pred)
+        pred_with_price['current_price'] = s['price']
 
-    # 上漲的
-    bulls = [s for s in other_changes if s['change_pct'] > 0]
-    bears = [s for s in other_changes if s['change_pct'] < 0]
-    flats = [s for s in other_changes if s['change_pct'] == 0]
+        embed = build_prediction_embed(
+            pred_with_price,
+            news_evidence=news_evidence if news_evidence else None,
+            risk_warnings=risk_warnings if risk_warnings else None,
+            metrics=tracking_metrics,
+        )
+        focus_embeds.append(embed)
 
-    if bulls:
-        bull_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bulls[:8]])
-        lines.append(f"🔴 {bull_text}")
-    if bears:
-        bear_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bears[:8]])
-        lines.append(f"🟢 {bear_text}")
-    if flats:
-        flat_text = " | ".join([s['name'] for s in flats[:8]])
-        lines.append(f"⚪ {flat_text}")
+        # 記錄通知 + 廣播日誌
+        guard.record_notification(code, direction, confidence)
+        log_broadcast(
+            code, pred,
+            news_titles=[gpt.get('reason', '')] if gpt else [],
+            warnings=risk_warnings,
+        )
+
+    # 發送焦點股 Embed
+    if focus_embeds:
+        try:
+            send_multi_embed(focus_embeds, channel=DISCORD_CHANNEL)
+            logger.info(f"焦點股 Embed 已發送 ({len(focus_embeds)} 檔)")
+        except Exception as e:
+            logger.error(f"焦點股 Embed 發送失敗: {e}")
+
+    suppressed = guard.get_suppressed_count()
+    if suppressed:
+        logger.info(f"本次壓抑 {suppressed} 則重複通知")
+
+    # === 輕追區：其餘股票只列漲跌（markdown）===
+    lines = [f"**{now.strftime('%H:%M')} 盤中快報**"]
+
+    if other_changes:
+        lines.append("")
+        lines.append("**📊 其餘漲跌：**")
+        bulls = [s for s in other_changes if s['change_pct'] > 0]
+        bears = [s for s in other_changes if s['change_pct'] < 0]
+        flats = [s for s in other_changes if s['change_pct'] == 0]
+
+        if bulls:
+            bull_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bulls[:8]])
+            lines.append(f"🔴 {bull_text}")
+        if bears:
+            bear_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bears[:8]])
+            lines.append(f"🟢 {bear_text}")
+        if flats:
+            flat_text = " | ".join([s['name'] for s in flats[:8]])
+            lines.append(f"⚪ {flat_text}")
 
     # 統計摘要
     bull_count = sum(1 for s in stock_changes if s['change_pct'] > 0)
@@ -576,6 +749,58 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
         logger.info("Discord 通知已發送")
     except Exception as e:
         logger.error(f"發送通知失敗: {e}")
+
+    # === AI 紙上交易評估 ===
+    try:
+        signal_embeds = []  # 買賣點偵測提醒
+        trade_embeds = []   # 實際成交通知
+
+        for s in stock_changes:
+            code = s['code']
+            name = s['name']
+            price = s['price']
+
+            # 取得預測（焦點股用即時粒子預測，其餘用盤前預測）
+            pred = particle_predictions.get(name)
+            if not pred:
+                premarket = PREMARKET_PREDICTIONS.get(code)
+                if premarket:
+                    pred = premarket
+
+            if not pred or not price or not isinstance(price, (int, float)):
+                continue
+
+            # Step 1: 偵測買賣點 → 發提醒
+            signal = AI_TRADER.detect_signals(code, name, price, pred)
+            if signal:
+                if signal['signal'] == 'buy_signal':
+                    signal_embeds.append(build_buy_signal_embed(signal))
+                    logger.info(f"買點偵測 {name}({code}) 信心{signal['confidence']:.0%} bias{signal['bias']:+.1f}")
+                elif signal['signal'] == 'sell_signal':
+                    signal_embeds.append(build_sell_signal_embed(signal))
+                    logger.info(f"賣點偵測 {name}({code}) {signal['reason']}")
+
+            # Step 2: 執行交易
+            result = AI_TRADER.evaluate_and_trade(code, name, price, pred)
+            if result:
+                if result['action'] == 'buy':
+                    trade_embeds.append(build_buy_embed(result))
+                    logger.info(f"AI 買入 {name}({code}) @ ${price:.1f}")
+                elif result['action'] == 'sell':
+                    trade_embeds.append(build_sell_embed(result))
+                    logger.info(f"AI 賣出 {name}({code}) @ ${price:.1f}")
+
+        # 先發買賣點提醒，再發成交通知
+        if signal_embeds:
+            send_multi_embed(signal_embeds, channel=AI_TRADE_CHANNEL)
+            logger.info(f"買賣點提醒已發送 ({len(signal_embeds)} 筆)")
+
+        if trade_embeds:
+            send_multi_embed(trade_embeds, channel=AI_TRADE_CHANNEL)
+            logger.info(f"AI 交易通知已發送 ({len(trade_embeds)} 筆)")
+
+    except Exception as e:
+        logger.error(f"AI 紙上交易評估失敗: {e}")
 
 
 def monitor_realtime_prices():
@@ -705,6 +930,9 @@ def main():
     if now.weekday() >= 5:
         logger.info("今天是週末，不執行")
         return
+
+    # 重置 AI 交易日報
+    AI_TRADER.reset_daily()
 
     # 1. 抓取基本面資料
     try:

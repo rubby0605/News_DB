@@ -86,7 +86,7 @@ def get_institutional_data(date_str):
 
 def calc_bias_with_weights(inst_data, stock_code, prices, day_index, weights):
     """
-    使用指定權重計算偏移量
+    使用指定權重計算偏移量（12 參數版）
 
     weights = {
         'foreign_large': 外資大買賣門檻,
@@ -94,7 +94,13 @@ def calc_bias_with_weights(inst_data, stock_code, prices, day_index, weights):
         'foreign_weight': 外資權重,
         'momentum_weight': 動量權重,
         'ema_weight': 均線權重,
-        'momentum_threshold': 動量門檻
+        'momentum_threshold': 動量門檻,
+        'dampening_threshold': 抑制門檻,
+        'market_weight': 大盤權重,
+        'gpt_weight': GPT 權重,
+        'confidence_threshold': 信心度門檻,
+        'volume_weight': 成交量權重,
+        'decision_threshold': 決策門檻 (取代寫死的 > 2 / < -2),
     }
     """
     bias = 0
@@ -136,6 +142,27 @@ def calc_bias_with_weights(inst_data, stock_code, prices, day_index, weights):
         elif current < recent_avg < longer_avg:
             bias -= weights['ema_weight']
 
+    # 成交量（量比）
+    volume_weight = weights.get('volume_weight', 0.5)
+    if day_index >= 5:
+        volumes = [p.get('volume', 0) for p in prices[max(0, day_index-5):day_index]]
+        avg_vol = sum(volumes) / len(volumes) if volumes and sum(volumes) > 0 else 0
+        current_vol = prices[day_index].get('volume', 0)
+        if avg_vol > 0 and current_vol > 0:
+            vol_ratio = current_vol / avg_vol
+            if vol_ratio > 1.5:
+                # 放量 → 強化既有方向
+                bias *= (1 + volume_weight * 0.3)
+            elif vol_ratio < 0.5:
+                # 縮量 → 衰減信號
+                bias *= (1 - volume_weight * 0.2)
+
+    # 抑制過大偏移
+    dampening_threshold = weights.get('dampening_threshold', 3.0)
+    if abs(bias) > dampening_threshold:
+        bias = dampening_threshold * (1 if bias > 0 else -1) + \
+               (bias - dampening_threshold * (1 if bias > 0 else -1)) * 0.3
+
     return bias
 
 
@@ -161,10 +188,11 @@ def evaluate_weights(weights, test_data):
             inst_data = inst_cache[date_str]
             bias = calc_bias_with_weights(inst_data, stock_code, prices, i, weights)
 
-            # 預測
-            if bias > 2:
+            # 預測（使用可調決策門檻）
+            decision_threshold = weights.get('decision_threshold', 2.0)
+            if bias > decision_threshold:
                 pred = 1  # 漲
-            elif bias < -2:
+            elif bias < -decision_threshold:
                 pred = -1  # 跌
             else:
                 pred = 0  # 盤整
@@ -241,14 +269,20 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
     print(f"   迭代代數: {generations}")
     print(f"   突變率: {mutation_rate}")
 
-    # 參數範圍
+    # 參數範圍（12 個參數）
     param_ranges = {
         'foreign_large': (1000, 8000),
         'foreign_medium': (200, 2000),
         'foreign_weight': (1, 8),
         'momentum_weight': (0.5, 5),
         'ema_weight': (0.5, 4),
-        'momentum_threshold': (1, 8)
+        'momentum_threshold': (1, 8),
+        'dampening_threshold': (1.5, 6.0),
+        'market_weight': (0.3, 3.0),
+        'gpt_weight': (0.3, 3.0),
+        'confidence_threshold': (0.5, 0.85),
+        'volume_weight': (0.2, 2.0),
+        'decision_threshold': (1.0, 4.0),
     }
 
     def random_individual():
@@ -300,15 +334,9 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
         # 評估適應度
         fitnesses = []
         for ind in population:
-            # 將浮點數轉為整數（某些參數需要）
-            weights = {
-                'foreign_large': int(ind['foreign_large']),
-                'foreign_medium': int(ind['foreign_medium']),
-                'foreign_weight': ind['foreign_weight'],
-                'momentum_weight': ind['momentum_weight'],
-                'ema_weight': ind['ema_weight'],
-                'momentum_threshold': ind['momentum_threshold']
-            }
+            weights = ind.copy()
+            weights['foreign_large'] = int(weights['foreign_large'])
+            weights['foreign_medium'] = int(weights['foreign_medium'])
             fitness = evaluate_weights(weights, test_data)
             fitnesses.append(fitness)
 
@@ -350,14 +378,12 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
         population = new_population
 
     # 最終結果
-    best_weights = {
-        'foreign_large': int(best_ever['foreign_large']),
-        'foreign_medium': int(best_ever['foreign_medium']),
-        'foreign_weight': round(best_ever['foreign_weight'], 2),
-        'momentum_weight': round(best_ever['momentum_weight'], 2),
-        'ema_weight': round(best_ever['ema_weight'], 2),
-        'momentum_threshold': round(best_ever['momentum_threshold'], 2)
-    }
+    best_weights = {}
+    for k, v in best_ever.items():
+        if k in ('foreign_large', 'foreign_medium'):
+            best_weights[k] = int(v)
+        else:
+            best_weights[k] = round(v, 2)
 
     return best_weights, best_ever_fitness, history
 
@@ -448,22 +474,54 @@ def main():
     # 發送到 Discord
     from notifier import send_discord
 
-    message = f'''**🔧 權重優化完成**
+    # 比較新舊權重
+    old_data = load_weights()
+    old_weights = old_data.get('weights', {}) if old_data else {}
+    old_acc = old_data.get('accuracy', 0) if old_data else 0
 
-**🏆 最佳準確率: {best_accuracy:.1%}**
+    param_labels = {
+        'foreign_large': '外資大量門檻',
+        'foreign_medium': '外資中量門檻',
+        'foreign_weight': '外資權重',
+        'momentum_weight': '動量權重',
+        'ema_weight': '均線權重',
+        'momentum_threshold': '動量門檻',
+        'dampening_threshold': '抑制門檻',
+        'market_weight': '大盤權重',
+        'gpt_weight': 'GPT權重',
+        'confidence_threshold': '信心門檻',
+        'volume_weight': '成量權重',
+        'decision_threshold': '決策門檻',
+    }
 
-**最佳權重:**
-• 外資大量門檻: {best_weights['foreign_large']} 張
-• 外資中量門檻: {best_weights['foreign_medium']} 張
-• 外資權重: {best_weights['foreign_weight']}
-• 動量權重: {best_weights['momentum_weight']}
-• 均線權重: {best_weights['ema_weight']}
-• 動量門檻: {best_weights['momentum_threshold']}%
+    weight_lines = []
+    for k, label in param_labels.items():
+        new_v = best_weights.get(k, '-')
+        old_v = old_weights.get(k, '-')
+        if old_v != '-' and new_v != '-':
+            delta = new_v - old_v if isinstance(new_v, (int, float)) and isinstance(old_v, (int, float)) else 0
+            arrow = '↑' if delta > 0 else '↓' if delta < 0 else '→'
+            weight_lines.append(f"• {label}: {new_v} {arrow}")
+        else:
+            weight_lines.append(f"• {label}: {new_v}")
 
-測試股票: {", ".join(test_stocks)}
-測試期間: {months[0]} ~ {months[-1]}'''
+    weights_text = '\n'.join(weight_lines)
+    acc_delta = best_accuracy - old_acc
+    acc_arrow = '↑' if acc_delta > 0 else '↓' if acc_delta < 0 else '→'
 
-    send_discord(message, title='模型優化結果')
+    from notifier import send_discord_embed, COLOR_INFO
+
+    embed = {
+        "title": "🧬 GA 權重優化完成",
+        "color": COLOR_INFO,
+        "fields": [
+            {"name": "回測準確率", "value": f"**{best_accuracy:.1%}** (舊: {old_acc:.1%} {acc_arrow})", "inline": True},
+            {"name": "測試股票", "value": ", ".join(test_stocks), "inline": True},
+            {"name": "測試期間", "value": f"{months[0]} ~ {months[-1]}", "inline": True},
+            {"name": "最佳參數 (12)", "value": weights_text, "inline": False},
+        ],
+    }
+    send_discord_embed(embed)
     print("\n已發送到 Discord!")
 
 

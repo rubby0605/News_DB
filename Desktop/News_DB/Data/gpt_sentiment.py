@@ -255,6 +255,100 @@ def batch_analyze_stocks(stock_names, model="gpt-3.5-turbo", delay=1.0):
     return results
 
 
+def select_top_stocks(all_news_summary, num_stocks=5, model="gpt-3.5-turbo"):
+    """
+    從所有股票的新聞摘要中選出最值得關注的股票
+
+    Args:
+        all_news_summary: {stock_name: [news_titles], ...}
+        num_stocks: 要選幾檔（預設 5）
+        model: 使用的模型
+
+    Returns:
+        list: [{'name': '台積電', 'code': '2330', 'reason': '...'}, ...]
+    """
+    client = get_client()
+
+    # 讀取股票代號對照表
+    stock_code_map = {}
+    try:
+        from newslib import read_stock_list
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        stock_list_file = os.path.join(script_dir, 'stock_list_less.txt')
+        dict_stock = read_stock_list(stock_list_file)
+        stock_code_map = {name: str(code) for name, code in dict_stock.items()}
+    except Exception:
+        pass
+
+    # 建立新聞摘要文字
+    summary_lines = []
+    for name, titles in all_news_summary.items():
+        code = stock_code_map.get(name, '?')
+        if titles:
+            title_text = '；'.join(titles[:5])
+            summary_lines.append(f"• {name}({code}) [{len(titles)}則]: {title_text}")
+
+    if not summary_lines:
+        return []
+
+    news_text = '\n'.join(summary_lines)
+
+    prompt = f"""你是一位專業的台股短線交易分析師。以下是今天 {len(all_news_summary)} 檔股票的新聞標題摘要。
+
+請從中選出 {num_stocks} 檔「今天最有短線交易機會」的股票。
+
+選股標準：
+1. 新聞熱度（新聞數量多代表市場關注度高）
+2. 情緒強度（明顯利多或利空，而非中性新聞）
+3. 異常信號（突發事件、重大消息、法人動向等）
+4. 優先選擇有明確方向性的股票（不論漲跌都算）
+
+各股票新聞摘要：
+{news_text}
+
+請用以下 JSON 格式回答（只回答 JSON，不要其他文字）：
+{{
+    "selected": [
+        {{"name": "股票名稱", "code": "股票代號", "reason": "選中理由（30字以內）"}},
+        ...共 {num_stocks} 檔
+    ]
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.3
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # 處理可能的 markdown 格式
+        if result_text.startswith('```'):
+            result_text = result_text.split('```')[1]
+            if result_text.startswith('json'):
+                result_text = result_text[4:]
+
+        result = json.loads(result_text)
+        selected = result.get('selected', [])
+
+        # 確保每個選中的股票都有 code
+        for item in selected:
+            if not item.get('code') or item['code'] == '?':
+                item['code'] = stock_code_map.get(item.get('name', ''), '')
+
+        return selected[:num_stocks]
+
+    except json.JSONDecodeError as e:
+        print(f"GPT 選股 JSON 解析失敗: {e}")
+        return []
+    except Exception as e:
+        print(f"GPT 選股錯誤: {e}")
+        return []
+
+
 def test_api():
     """測試 API 連線"""
     print("測試 OpenAI API 連線...")

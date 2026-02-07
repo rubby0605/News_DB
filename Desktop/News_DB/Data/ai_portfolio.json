@@ -1,0 +1,14 @@
+{
+  "date": "2026-02-07",
+  "initial_capital": 1000000,
+  "cash": 1000000,
+  "positions": {},
+  "trade_history": [],
+  "daily_pnl": 0.0,
+  "cumulative_stats": {
+    "total_realized_pnl": 0.0,
+    "total_trades": 0,
+    "win_count": 0,
+    "loss_count": 0
+  }
+}
