@@ -330,7 +330,7 @@ def send_postmarket_analysis():
         # 抓取收盤價
         data = craw_realtime(stock_list)
 
-        if 'msgArray' not in data or len(data['msgArray']) == 0:
+        if not data or 'msgArray' not in data or len(data['msgArray']) == 0:
             logger.error("無法取得收盤資料")
             return
 
@@ -635,7 +635,7 @@ def send_prediction_notification(stock_prices, clf, vectorizer, now):
                 'change_pct': change_pct,
                 'is_focus': is_focus,
             })
-        except:
+        except Exception:
             continue
 
     stock_changes.sort(key=lambda x: x['change_pct'], reverse=True)
@@ -828,7 +828,7 @@ def monitor_realtime_prices():
     try:
         from hybrid_predictor import hybrid_predict, load_ml_model
         clf, vectorizer = load_ml_model()
-    except:
+    except Exception:
         clf, vectorizer = None, None
 
     with open(db_file, 'a', encoding='utf-8') as fi:
@@ -868,7 +868,7 @@ def monitor_realtime_prices():
 
                 # 收集股價資料
                 stock_prices = []
-                for i in range(min(len(dict_stock) - 1, len(data['msgArray']))):
+                for i in range(min(len(dict_stock), len(data['msgArray']))):
                     item = data['msgArray'][i]
                     line = ''
                     for column in columns:
@@ -982,75 +982,58 @@ def main():
     except Exception as e:
         logger.error(f"發送每日報告失敗: {e}")
 
-    # 8. 每週一自動優化權重
-    if now.weekday() == 0:  # 週一
-        try:
-            logger.info("=== 每週權重優化 ===")
-            run_weekly_optimization()
-        except Exception as e:
-            logger.error(f"權重優化失敗: {e}")
+    # 8. 每日盤後 GA 優化（rolling window + 穩定性檢查）
+    try:
+        logger.info("=== 每日 GA 權重優化 ===")
+        run_daily_ga_optimization()
+    except Exception as e:
+        logger.error(f"每日 GA 優化失敗: {e}")
 
     logger.info("今日任務完成")
 
 
-def run_weekly_optimization():
-    """每週執行權重優化"""
-    from optimize_weights import prepare_test_data, genetic_algorithm, save_weights
-    from newslib import read_stock_list
+def run_daily_ga_optimization():
+    """每日盤後 GA 優化（rolling window + 穩定性檢查）"""
+    from optimize_weights import run_daily_optimization, load_weights
 
-    logger.info("開始遺傳演算法優化...")
+    logger.info("開始每日 GA 優化...")
 
-    # 讀取股票清單
-    stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
-    dict_stock = read_stock_list(stock_list_file)
-
-    # 選擇測試股票
-    test_stocks = ['2330', '3189', '2454', '2881', '2603']
-
-    # 計算月份
-    today = datetime.date.today()
-    months = []
-    for i in range(2):
-        target_month = today.month - i - 1
-        target_year = today.year
-        if target_month <= 0:
-            target_month += 12
-            target_year -= 1
-        months.append(f'{target_year}{target_month:02d}')
-
-    # 準備資料
-    test_data = prepare_test_data(test_stocks, months)
-
-    if not test_data:
-        logger.warning("無測試資料，跳過優化")
-        return
-
-    # 遺傳演算法優化
-    best_weights, best_accuracy, history = genetic_algorithm(
-        test_data,
+    result = run_daily_optimization(
+        stock_codes=['2330', '3189', '2454', '2881', '2603'],
+        rolling_days=40,
         population_size=30,
         generations=20,
-        mutation_rate=0.2
+        max_drift=0.25,
+        min_improvement=0.005
     )
 
-    # 儲存權重
-    save_weights(best_weights, best_accuracy)
-
     # 發送結果到 Discord
-    message = f'''**🧬 每週權重優化完成**
+    from notifier import send_discord_embed, COLOR_INFO, COLOR_WARNING
 
-**🏆 準確率: {best_accuracy:.1%}**
+    status = "✅ 已更新" if result['updated'] else "⚠️ 未更新"
+    color = COLOR_INFO if result['updated'] else COLOR_WARNING
 
-**優化後權重:**
-• 外資大量門檻: {best_weights['foreign_large']} 張
-• 外資中量門檻: {best_weights['foreign_medium']} 張
-• 外資權重: {best_weights['foreign_weight']:.2f}
-• 動量權重: {best_weights['momentum_weight']:.2f}
-• 均線權重: {best_weights['ema_weight']:.2f}
+    fields = [
+        {"name": "狀態", "value": status, "inline": True},
+    ]
 
-下週預測將使用新權重'''
+    if 'new_acc' in result:
+        fields.append({"name": "新準確率", "value": f"{result['new_acc']:.1%}", "inline": True})
+        fields.append({"name": "舊準確率", "value": f"{result['old_acc']:.1%}", "inline": True})
 
-    send_discord(message, title='週一權重優化', channel=DISCORD_CHANNEL)
+    if 'drift' in result:
+        fields.append({"name": "權重漂移", "value": f"{result['drift']:.1%}", "inline": True})
+
+    fields.append({"name": "原因", "value": result['reason'], "inline": False})
+
+    embed = {
+        "title": f"🧬 每日 GA 優化 | {datetime.date.today()}",
+        "color": color,
+        "fields": fields,
+    }
+    send_discord_embed(embed, channel=DISCORD_CHANNEL)
+
+    logger.info(f"每日 GA 優化完成: {result['reason']}")
 
 
 if __name__ == "__main__":

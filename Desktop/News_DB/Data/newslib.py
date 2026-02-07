@@ -38,12 +38,12 @@ def read_stock_price(num, datestr_list, stock):
     dateid=0
     df = pd.DataFrame(array)
     for datestr in datestr_list:
-        f = open(str(num)+'_'+datestr + '.txt')
-        lines = f.readlines()
+        with open(str(num)+'_'+datestr + '.txt') as f:
+            lines = f.readlines()
         i=0
         for line in lines:
-            mat = re.split('\t|2022-| |:|\n', line)
-            if int(num) != int(mat[1]):
+            mat = re.split(r'\t|\d{4}-| |:|\n', line)
+            if len(mat) < 13 or int(num) != int(mat[1]):
                 continue
             [mm,dd]=re.split('-',mat[10])
             if '-' not in mat[3]:
@@ -51,7 +51,7 @@ def read_stock_price(num, datestr_list, stock):
                 df.iloc[i,1] = price
                 df.iloc[i,0] = (float(mat[11])-9)*60+float(mat[12])
                 i = i + 1
-            
+
     return df
 def get_stock_price(num, datestr_list, stock):
     #stock_price, stock_price_est = stock.get_stock_price(2330, ['220323'], '台積電')
@@ -78,13 +78,13 @@ def get_stock_price(num, datestr_list, stock):
     deltatt = 0
     dateid=0
     for datestr in datestr_list:
-        f = open(str(num)+'_'+datestr + '.txt')
+        with open(str(num)+'_'+datestr + '.txt') as f:
+            lines = f.readlines()
         print(total)
-        lines = f.readlines()
         i=0
         for line in lines:
-            mat = re.split('\t|2022-| |:|\n', line)
-            if int(num) != int(mat[1]):
+            mat = re.split(r'\t|\d{4}-| |:|\n', line)
+            if len(mat) < 13 or int(num) != int(mat[1]):
                 continue
             [mm,dd]=re.split('-',mat[10])
             if i == 0:
@@ -220,8 +220,8 @@ def read_stock_daily(num, datestr):
 
 def read_stock_list(filename):
     #filename = "stock_list.txt"
-    f = open(filename,'r')
-    lines = f.readlines()
+    with open(filename, 'r') as f:
+        lines = f.readlines()
     dict_stock = {}
     for line in lines:
         mat = re.split(' |\t|\n',line);
@@ -232,8 +232,8 @@ def read_stock_list(filename):
     return dict_stock
 def read_stock_fulllist_id0(filename):
     #filename = "stock_list.txt"
-    f = open(filename,'r')
-    lines = f.readlines()
+    with open(filename, 'r') as f:
+        lines = f.readlines()
     dict_stock = {}
     for line in lines:
         mat = re.split(' |\t|\n',line);
@@ -245,8 +245,8 @@ def read_stock_fulllist_id0(filename):
 
 def read_stock_fulllist(filename):
     #filename = "stock_list.txt"
-    f = open(filename,'r')
-    lines = f.readlines()
+    with open(filename, 'r') as f:
+        lines = f.readlines()
     dict_stock = {}
     for line in lines:
         mat = re.split(' |\t|\n',line);

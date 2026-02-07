@@ -257,7 +257,11 @@ class AITrader:
 
     def execute_sell(self, stock_code, price, reason):
         """模擬賣出"""
-        pos = self.positions.pop(stock_code)
+        pos = self.positions.get(stock_code)
+        if not pos:
+            logger.warning(f"嘗試賣出 {stock_code} 但無持倉")
+            return None
+
         shares = pos['shares']
         buy_price = pos['buy_price']
         buy_cost = pos['buy_cost']
@@ -271,8 +275,10 @@ class AITrader:
         net_proceeds = gross_proceeds - total_sell_cost
 
         realized_pnl = net_proceeds - buy_cost
-        pnl_pct = realized_pnl / buy_cost * 100
+        pnl_pct = realized_pnl / buy_cost * 100 if buy_cost > 0 else 0
 
+        # 計算完成後才移除持倉
+        self.positions.pop(stock_code)
         self.cash += net_proceeds
 
         # 持有時間

@@ -279,18 +279,33 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
         'momentum_threshold': (1, 8),
         'dampening_threshold': (1.5, 6.0),
         'market_weight': (0.3, 3.0),
-        'gpt_weight': (0.3, 3.0),
+        'gpt_weight': (-3.0, 3.0),
         'confidence_threshold': (0.5, 0.85),
         'volume_weight': (0.2, 2.0),
         'decision_threshold': (1.0, 4.0),
     }
 
+    def enforce_constraints(ind):
+        """強制邏輯 constraint"""
+        # foreign_large 一定要 > foreign_medium
+        if ind['foreign_medium'] >= ind['foreign_large']:
+            ind['foreign_large'] = ind['foreign_medium'] + np.random.uniform(200, 1000)
+            ind['foreign_large'] = np.clip(ind['foreign_large'], *param_ranges['foreign_large'])
+
+        # decision_threshold 一定要 < dampening_threshold
+        if ind['decision_threshold'] >= ind['dampening_threshold']:
+            ind['decision_threshold'] = ind['dampening_threshold'] * np.random.uniform(0.4, 0.8)
+            ind['decision_threshold'] = np.clip(ind['decision_threshold'], *param_ranges['decision_threshold'])
+
+        return ind
+
     def random_individual():
         """產生隨機個體"""
-        return {
+        ind = {
             k: np.random.uniform(v[0], v[1])
             for k, v in param_ranges.items()
         }
+        return enforce_constraints(ind)
 
     def crossover(parent1, parent2):
         """交叉"""
@@ -300,7 +315,7 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
                 child[k] = parent1[k]
             else:
                 child[k] = parent2[k]
-        return child
+        return enforce_constraints(child)
 
     def mutate(individual):
         """突變"""
@@ -310,7 +325,7 @@ def genetic_algorithm(test_data, population_size=50, generations=30, mutation_ra
                 # 在當前值附近隨機調整
                 delta = (high - low) * 0.3 * np.random.randn()
                 mutated[k] = np.clip(mutated[k] + delta, low, high)
-        return mutated
+        return enforce_constraints(mutated)
 
     def select_parents(population, fitnesses, num_parents):
         """輪盤選擇"""
@@ -414,6 +429,131 @@ def load_weights():
         with open(WEIGHTS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return None
+
+
+def calc_weight_drift(old_weights, new_weights):
+    """計算新舊權重的漂移程度（0~1，越大表示差異越大）"""
+    if not old_weights or not new_weights:
+        return 1.0
+
+    param_ranges = {
+        'foreign_large': (1000, 8000),
+        'foreign_medium': (200, 2000),
+        'foreign_weight': (1, 8),
+        'momentum_weight': (0.5, 5),
+        'ema_weight': (0.5, 4),
+        'momentum_threshold': (1, 8),
+        'dampening_threshold': (1.5, 6.0),
+        'market_weight': (0.3, 3.0),
+        'gpt_weight': (-3.0, 3.0),
+        'confidence_threshold': (0.5, 0.85),
+        'volume_weight': (0.2, 2.0),
+        'decision_threshold': (1.0, 4.0),
+    }
+
+    drifts = []
+    for k, (low, high) in param_ranges.items():
+        old_v = old_weights.get(k, (low + high) / 2)
+        new_v = new_weights.get(k, (low + high) / 2)
+        normalized_drift = abs(new_v - old_v) / (high - low)
+        drifts.append(normalized_drift)
+
+    return sum(drifts) / len(drifts) if drifts else 0
+
+
+def run_daily_optimization(stock_codes=None, rolling_days=40,
+                           population_size=30, generations=20,
+                           max_drift=0.25, min_improvement=0.005):
+    """
+    每日盤後 GA 優化（rolling window + 穩定性檢查）
+
+    Args:
+        stock_codes: 測試股票代碼，預設 5 檔
+        rolling_days: rolling window 天數
+        population_size: GA 族群大小
+        generations: GA 迭代數
+        max_drift: 權重最大允許漂移（0~1），超過則不更新
+        min_improvement: 最小準確率提升，未達到則不更新
+
+    Returns:
+        dict: {'updated': bool, 'reason': str, 'new_acc': float, 'old_acc': float}
+    """
+    if stock_codes is None:
+        stock_codes = ['2330', '3189', '2454', '2881', '2603']
+
+    print(f"\n📊 每日 GA 優化（rolling {rolling_days} 天）")
+
+    # 計算 rolling window 月份（涵蓋最近 N 天）
+    today = datetime.date.today()
+    months_needed = (rolling_days // 20) + 2  # 每月約 20 個交易日，多取 2 個月
+    months = []
+    for i in range(months_needed):
+        target_month = today.month - i
+        target_year = today.year
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+        months.append(f'{target_year}{target_month:02d}')
+
+    months.reverse()
+    print(f"  測試股票: {stock_codes}")
+    print(f"  資料月份: {months}")
+
+    # 準備資料
+    test_data = prepare_test_data(stock_codes, months)
+    if not test_data:
+        return {'updated': False, 'reason': '無測試資料'}
+
+    # 載入舊權重
+    old_data = load_weights()
+    old_weights = old_data.get('weights', {}) if old_data else {}
+    old_acc = old_data.get('accuracy', 0) if old_data else 0
+
+    # 跑 GA
+    new_weights, new_acc, history = genetic_algorithm(
+        test_data,
+        population_size=population_size,
+        generations=generations,
+        mutation_rate=0.2
+    )
+
+    # 穩定性檢查
+    drift = calc_weight_drift(old_weights, new_weights)
+    improvement = new_acc - old_acc
+
+    print(f"\n  舊準確率: {old_acc:.1%}")
+    print(f"  新準確率: {new_acc:.1%} (差異: {improvement:+.1%})")
+    print(f"  權重漂移: {drift:.2%}")
+
+    # 決定是否更新
+    if drift > max_drift and improvement < min_improvement * 2:
+        reason = f'漂移過大 ({drift:.1%}) 且改善不足 ({improvement:+.1%})，不更新'
+        print(f"  ⚠️ {reason}")
+        return {
+            'updated': False, 'reason': reason,
+            'new_acc': new_acc, 'old_acc': old_acc,
+            'drift': drift, 'new_weights': new_weights
+        }
+
+    if improvement < -min_improvement:
+        reason = f'準確率下降 ({improvement:+.1%})，不更新'
+        print(f"  ⚠️ {reason}")
+        return {
+            'updated': False, 'reason': reason,
+            'new_acc': new_acc, 'old_acc': old_acc,
+            'drift': drift, 'new_weights': new_weights
+        }
+
+    # 更新權重
+    save_weights(new_weights, new_acc)
+    reason = f'準確率 {old_acc:.1%} → {new_acc:.1%}，漂移 {drift:.1%}，已更新'
+    print(f"  ✅ {reason}")
+
+    return {
+        'updated': True, 'reason': reason,
+        'new_acc': new_acc, 'old_acc': old_acc,
+        'drift': drift, 'new_weights': new_weights
+    }
 
 
 def main():

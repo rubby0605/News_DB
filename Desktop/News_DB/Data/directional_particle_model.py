@@ -275,7 +275,7 @@ def calc_volume_signal(history, lookback=20):
 
     volume_ratio = today_volume / avg_volume if avg_volume > 0 else 1.0
 
-    if len(history) >= 2:
+    if len(history) >= 2 and history[-2].get('close', 0) > 0:
         price_change = (history[-1]['close'] - history[-2]['close']) / history[-2]['close'] * 100
     else:
         price_change = 0

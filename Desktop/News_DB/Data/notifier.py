@@ -116,7 +116,7 @@ def send_discord(message, title=None, channel='release'):
             headers={'Content-Type': 'application/json'}
         )
 
-        if response.status_code == 204:
+        if 200 <= response.status_code < 300:
             print("Discord 通知已發送！")
             return True
         else:
@@ -162,7 +162,7 @@ def send_discord_embed(embed_data, channel='release'):
             json=payload,
             headers={'Content-Type': 'application/json'}
         )
-        if response.status_code == 204:
+        if 200 <= response.status_code < 300:
             return True
         else:
             print(f"Embed 發送失敗: {response.status_code}")
