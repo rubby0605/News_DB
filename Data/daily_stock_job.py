@@ -15,6 +15,7 @@ import time
 import datetime
 import random
 import logging
+import json
 
 # 設定工作目錄為腳本所在位置
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,13 +48,48 @@ logger = logging.getLogger(__name__)
 
 # 儲存盤前預測結果（供盤後比較）
 PREMARKET_PREDICTIONS = {}
+PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, 'today_predictions.json')
 
 # 盤前新聞選股結果（精追 5 檔）
 # {'2330': {'name': '台積電', 'reason': '...', 'news_count': N, 'sentiment_score': 0.8}, ...}
 FOCUS_STOCKS = {}
+FOCUS_STOCKS_FILE = os.path.join(SCRIPT_DIR, 'today_focus_stocks.json')
 
 # Discord 頻道：'release' 正式 / 'test' 測試
 DISCORD_CHANNEL = 'release'
+
+
+def save_predictions_to_file():
+    """將盤前預測存到 JSON 檔（供盤後讀取）"""
+    data = {
+        'date': datetime.date.today().isoformat(),
+        'predictions': PREMARKET_PREDICTIONS,
+        'focus_stocks': FOCUS_STOCKS,
+    }
+    with open(PREDICTIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info(f"預測結果已存檔 ({len(PREMARKET_PREDICTIONS)} 檔)")
+
+
+def load_predictions_from_file():
+    """從 JSON 檔讀取今日盤前預測"""
+    global PREMARKET_PREDICTIONS, FOCUS_STOCKS
+    if not os.path.exists(PREDICTIONS_FILE):
+        return False
+    try:
+        with open(PREDICTIONS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('date') != datetime.date.today().isoformat():
+            logger.warning("預測檔案非今日資料，跳過")
+            return False
+        PREMARKET_PREDICTIONS = data.get('predictions', {})
+        if not FOCUS_STOCKS and data.get('focus_stocks'):
+            FOCUS_STOCKS = data['focus_stocks']
+        logger.info(f"從檔案載入 {len(PREMARKET_PREDICTIONS)} 筆盤前預測")
+        return True
+    except Exception as e:
+        logger.error(f"載入預測檔案失敗: {e}")
+        return False
 
 
 def select_focus_stocks():
@@ -244,6 +280,9 @@ def send_premarket_analysis():
         send_discord(message, title='盤前 AI 分析', channel=DISCORD_CHANNEL)
         logger.info(f"盤前分析完成，預測 {len(results)} 檔股票")
 
+        # 存檔供盤後比對
+        save_predictions_to_file()
+
     except Exception as e:
         logger.error(f"盤前分析失敗: {e}")
 
@@ -255,8 +294,12 @@ def send_postmarket_analysis():
     global PREMARKET_PREDICTIONS
     logger.info("=== 開始盤後誤差分析 ===")
 
+    # 記憶體沒有預測資料 → 從檔案載入
     if not PREMARKET_PREDICTIONS:
-        logger.warning("沒有盤前預測資料，跳過誤差分析")
+        load_predictions_from_file()
+
+    if not PREMARKET_PREDICTIONS:
+        logger.warning("沒有盤前預測資料（記憶體和檔案都沒有），跳過誤差分析")
         return
 
     try:
@@ -347,9 +390,10 @@ def send_postmarket_analysis():
         focus_results = [r for r in results if r['code'] in focus_codes or r['name'] in focus_names]
         other_results = [r for r in results if r['code'] not in focus_codes and r['name'] not in focus_names]
 
-        # 焦點股票準確率
-        focus_correct = sum(1 for r in focus_results if r['correct'])
-        focus_total = len(focus_results)
+        # 焦點股票準確率（排除觀望）
+        focus_judged = [r for r in focus_results if r['correct'] is not None]
+        focus_correct = sum(1 for r in focus_judged if r['correct'])
+        focus_total = len(focus_judged)
         focus_accuracy = focus_correct / focus_total * 100 if focus_total > 0 else 0
 
         # 按誤差排序
@@ -371,13 +415,13 @@ def send_postmarket_analysis():
             lines.append('**⭐ 新聞焦點股表現：**')
             for r in focus_results:
                 emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
-                status = '✓' if r['correct'] else '✗'
-                lines.append(f"{emoji} {r['name']}: 預測${r['predicted']:.0f}→實際${r['actual']:.0f} ({r['actual_change']:+.1f}%) 誤差{r['error']:.1f}% {status}")
+                status = '✓' if r['correct'] else ('—' if r['correct'] is None else '✗')
+                lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']}→實際${r['actual']:.0f} ({r['actual_change']:+.1f}%) 誤差{r['error']:.1f}% {status}")
 
         lines.append('')
         lines.append('**✅ 預測正確 TOP 5：**')
 
-        correct_results = [r for r in results if r['correct']]
+        correct_results = [r for r in results if r['correct'] is True]
         for r in correct_results[:5]:
             emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
             focus_tag = ' ⭐' if (r['code'] in focus_codes or r['name'] in focus_names) else ''
@@ -386,16 +430,27 @@ def send_postmarket_analysis():
         lines.append('')
         lines.append('**❌ 預測錯誤：**')
 
-        wrong_results = [r for r in results if not r['correct']]
+        wrong_results = [r for r in results if r['correct'] is False]
         for r in wrong_results[:5]:
             emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
             focus_tag = ' ⭐' if (r['code'] in focus_codes or r['name'] in focus_names) else ''
             lines.append(f"{emoji} {r['name']}: 預測{r['pred_direction']} → 實際{r['actual_change']:+.1f}% ✗{focus_tag}")
 
+        # 觀望結果
+        wait_results = [r for r in results if r['correct'] is None]
+        if wait_results:
+            lines.append('')
+            lines.append(f'**⏸️ 觀望 {len(wait_results)} 檔（不計入準確率）：**')
+            for r in wait_results[:5]:
+                emoji = '🔴' if r['actual_change'] > 0 else '🟢' if r['actual_change'] < 0 else '⚪'
+                lines.append(f"{emoji} {r['name']}: 實際{r['actual_change']:+.1f}%")
+
         # 統計
         avg_error = sum(r['error'] for r in results) / len(results) if results else 0
         lines.append('')
         lines.append(f'**📈 平均價格誤差: {avg_error:.1f}%**')
+        if wait_results:
+            lines.append(f'**⏸️ 觀望: {len(wait_results)} 檔** | 有效預測: {total_compared} 檔')
 
         message = '\n'.join(lines)
         send_discord(message, title='盤後誤差分析', channel=DISCORD_CHANNEL)
