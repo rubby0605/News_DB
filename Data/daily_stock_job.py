@@ -45,19 +45,38 @@ from newslib import (
 )
 from news_collector import collect_all_news
 from news_stock_selector import select_focus_stocks_from_news
-from notifier import send_daily_report, send_discord
+from notifier import (
+    send_daily_report, send_discord, send_multi_embed,
+    build_prediction_embed, format_signal_breakdown
+)
+from notification_guard import NotificationGuard
+from broadcast_logger import log_broadcast
+from prediction_history import get_tracking_metrics
+from ai_trader import (
+    AITrader, build_buy_embed, build_sell_embed, build_daily_portfolio_embed,
+    build_buy_signal_embed, build_sell_signal_embed
+)
 
 # 儲存盤前預測結果（供盤後比較）
 PREMARKET_PREDICTIONS = {}
-PREDICTIONS_FILE = os.path.join(SCRIPT_DIR, 'today_predictions.json')
+
+from config import (
+    PREDICTIONS_FILE, FOCUS_STOCKS_FILE, STOCK_LIST_FILE,
+    DISCORD_CHANNEL as _DEFAULT_DISCORD_CHANNEL,
+    AI_TRADE_CHANNEL as _DEFAULT_AI_TRADE_CHANNEL,
+    INITIAL_CAPITAL, COLOR_INFO, COLOR_WARNING,
+)
 
 # 盤前新聞選股結果（精追 5 檔）
 # {'2330': {'name': '台積電', 'reason': '...', 'news_count': N, 'sentiment_score': 0.8}, ...}
 FOCUS_STOCKS = {}
-FOCUS_STOCKS_FILE = os.path.join(SCRIPT_DIR, 'today_focus_stocks.json')
 
 # Discord 頻道：'release' 正式 / 'test' 測試
-DISCORD_CHANNEL = 'release'
+DISCORD_CHANNEL = _DEFAULT_DISCORD_CHANNEL
+
+# AI 紙上交易系統（100 萬虛擬資金）
+AI_TRADER = AITrader(initial_capital=INITIAL_CAPITAL)
+AI_TRADE_CHANNEL = _DEFAULT_AI_TRADE_CHANNEL
 
 
 def save_predictions_to_file():
@@ -160,7 +179,7 @@ def send_premarket_analysis():
         from newslib import read_stock_list
 
         model = DirectionalParticleModel(n_particles=1000)
-        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+        stock_list_file = STOCK_LIST_FILE
         dict_stock = read_stock_list(stock_list_file)
 
         # GPT 新聞情緒分析（焦點股票）
@@ -174,11 +193,14 @@ def send_premarket_analysis():
         except Exception as e:
             logger.warning(f"GPT 分析失敗: {e}")
 
-        # 對全部股票做粒子模型預測（焦點股整合 GPT 情緒）
+        # 對全部股票做粒子模型預測（焦點股整合 GPT 情緒 + 肥尾模型）
         results = []
         for name, code in dict_stock.items():
             gpt_data = gpt_sentiments.get(name) if name in focus_names else None
-            result = model.predict(str(code), name, gpt_sentiment=gpt_data)
+            # 焦點股使用肥尾模型（更精確但較慢）
+            is_focus = (name in focus_names) or (str(code) in focus_codes)
+            result = model.predict(str(code), name, gpt_sentiment=gpt_data,
+                                  use_fat_tail=is_focus)
             if 'error' not in result:
                 results.append(result)
                 PREMARKET_PREDICTIONS[result['stock_code']] = {
@@ -189,6 +211,9 @@ def send_premarket_analysis():
                     'current_price': result['current_price'],
                     'is_focus': result['stock_code'] in focus_codes,
                     'has_gpt': gpt_data is not None,
+                    'bias': result.get('bias', 0),
+                    'signals': result.get('signals', {}),
+                    'warnings': result.get('warnings', []),
                 }
                 # 記錄預測（供系統偏差自動修正用）
                 try:
@@ -232,12 +257,13 @@ def send_premarket_analysis():
                 medal = medals[i] if i < len(medals) else f'{i+1}.'
                 name = info['name']
 
-                # 找到對應的粒子模型預測
+                # 找到對應的粒子模型預測（焦點股用肥尾模型）
                 pred = next((r for r in focus_results if r['stock_code'] == code or r['stock_name'] == name), None)
                 if pred:
                     foreign = pred['signals'].get('foreign', '')
                     foreign_info = f' [{foreign}]' if '買超' in foreign or '大買' in foreign or '賣超' in foreign or '大賣' in foreign else ''
-                    lines.append(f"{medal} {name}({code}): ${pred['current_price']:.0f}→${pred['predicted_price']:.0f} ({pred['expected_change']:+.1f}%) [{pred['direction']} {pred['confidence']:.0%}]{foreign_info}")
+                    fat_tail_mark = ' 🎯' if True else ''  # 焦點股都用肥尾模型
+                    lines.append(f"{medal} {name}({code}): ${pred['current_price']:.0f}→${pred['predicted_price']:.0f} ({pred['expected_change']:+.1f}%) [{pred['direction']} {pred['confidence']:.0%}]{foreign_info}{fat_tail_mark}")
                 else:
                     lines.append(f"{medal} {name}({code}): 無預測資料")
 
@@ -306,14 +332,14 @@ def send_postmarket_analysis():
     try:
         from newslib import read_stock_list, craw_realtime
 
-        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+        stock_list_file = STOCK_LIST_FILE
         dict_stock = read_stock_list(stock_list_file)
         stock_list = [int(dict_stock[stock]) for stock in dict_stock.keys()]
 
         # 抓取收盤價
         data = craw_realtime(stock_list)
 
-        if 'msgArray' not in data or len(data['msgArray']) == 0:
+        if not data or 'msgArray' not in data or len(data['msgArray']) == 0:
             logger.error("無法取得收盤資料")
             return
 
@@ -340,6 +366,20 @@ def send_postmarket_analysis():
                 try:
                     from prediction_history import record_outcome
                     record_outcome(code, actual_direction, actual_change)
+                except Exception:
+                    pass
+
+                # 廣播日誌回填實際結果
+                try:
+                    from broadcast_logger import update_outcomes
+                    update_outcomes(
+                        datetime.date.today().isoformat(),
+                        {code: {
+                            'actual_direction': actual_direction,
+                            'actual_close': actual_price,
+                            'actual_change': actual_change,
+                        }}
+                    )
                 except Exception:
                     pass
 
@@ -457,11 +497,81 @@ def send_postmarket_analysis():
         send_discord(message, title='盤後誤差分析', channel=DISCORD_CHANNEL)
         logger.info(f"盤後分析完成，準確率 {accuracy:.1f}%")
 
+        # 發送每日績效 Embed
+        send_daily_metrics_summary()
+
+        # AI 紙上交易：GPT Agent 決策 + 日報
+        try:
+            closing_prices = {}
+            for item in data['msgArray']:
+                code = item.get('c', '')
+                price_str = item.get('z', '-')
+                if price_str != '-':
+                    closing_prices[code] = float(price_str)
+
+            # 準備預測資料給 GPT Agent
+            all_preds_for_gpt = []
+            for code, pred in PREMARKET_PREDICTIONS.items():
+                pred_copy = dict(pred)
+                pred_copy['stock_code'] = code
+                pred_copy['stock_name'] = pred.get('name', code)
+                all_preds_for_gpt.append(pred_copy)
+
+            # 取得近期準確率
+            recent_accuracy = None
+            try:
+                metrics = get_tracking_metrics()
+                if metrics and metrics.get('accuracy_5d'):
+                    recent_accuracy = metrics['accuracy_5d'] / 100.0
+            except Exception:
+                pass
+
+            # GPT Agent 一次分析所有股票，做出交易決策
+            trade_results = AI_TRADER.evaluate_all_with_gpt(
+                all_preds_for_gpt, closing_prices, recent_accuracy
+            )
+
+            # 發送交易結果到 Discord
+            from notifier import send_discord_embed
+            for result in trade_results:
+                if result['action'] == 'buy':
+                    embed = build_buy_embed(result)
+                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
+                elif result['action'] == 'sell':
+                    embed = build_sell_embed(result)
+                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
+
+            if trade_results:
+                logger.info(f"AI GPT Agent 執行 {len(trade_results)} 筆交易")
+
+            # 發送每日投資組合日報
+            portfolio_embed = build_daily_portfolio_embed(AI_TRADER, closing_prices)
+            send_discord_embed(portfolio_embed, channel=AI_TRADE_CHANNEL)
+            logger.info("AI 每日交易日報已發送")
+        except Exception as e:
+            logger.error(f"AI 交易日報發送失敗: {e}")
+
         # 清空預測資料
         PREMARKET_PREDICTIONS = {}
 
     except Exception as e:
         logger.error(f"盤後分析失敗: {e}")
+
+
+def send_daily_metrics_summary():
+    """盤後發送每日績效追蹤 Embed"""
+    try:
+        from prediction_history import get_tracking_metrics, calc_advanced_metrics
+        from notifier import build_metrics_embed, send_discord_embed
+
+        today_metrics = get_tracking_metrics()
+        advanced_metrics = calc_advanced_metrics()
+
+        embed = build_metrics_embed(today_metrics, advanced_metrics)
+        send_discord_embed(embed, channel=DISCORD_CHANNEL)
+        logger.info("每日績效 Embed 已發送")
+    except Exception as e:
+        logger.error(f"每日績效 Embed 發送失敗: {e}")
 
 
 def fetch_fundamental_data():
@@ -471,7 +581,7 @@ def fetch_fundamental_data():
     """
     logger.info("=== 開始抓取基本面資料 ===")
 
-    stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+    stock_list_file = STOCK_LIST_FILE
     output_file = os.path.join(SCRIPT_DIR, 'Data', 'stock_data.csv')
 
     # 確保輸出目錄存在
@@ -499,131 +609,112 @@ def fetch_fundamental_data():
     logger.info(f"基本面資料已儲存至: {output_file}")
 
 
-def send_prediction_notification(stock_prices, clf, vectorizer, now):
+def send_prediction_notification(stock_prices, clf, vectorizer, now, taiex_info=None):
     """
-    發送股票預測通知到 Discord（雙軌模式）
-    - 5 檔精追：粒子模型預測 + GPT 新聞情緒
-    - 其餘輕追：只列出即時漲跌幅
+    發送股票預測通知到 Discord
+    - 只顯示漲跌幅大的股票
+    - 加入重要新聞標題
+    - 顯示大盤即時點數
     """
+    from hybrid_predictor import hybrid_predict
+    from newslib import scrapBingNews, scrapGoogleNews
+    import re
+
     logger.info("發送 15 分鐘預測通知...")
 
-    # 焦點股票（從全域 FOCUS_STOCKS 取得）
-    focus_codes = set(FOCUS_STOCKS.keys()) if FOCUS_STOCKS else set()
-    focus_names = {v['name'] for v in FOCUS_STOCKS.values()} if FOCUS_STOCKS else {'群聯', '景碩'}
+    # 優先關注的股票
+    PRIORITY_STOCKS = ['群聯', '景碩']
+    CHANGE_THRESHOLD = 1.5  # 漲跌幅超過 1.5% 才顯示
 
-    # 載入粒子模型（只對焦點股票做預測，省 API 費用）
-    particle_predictions = {}
-    try:
-        from directional_particle_model import DirectionalParticleModel
-        particle_model = DirectionalParticleModel(n_particles=500)
+    # 建立通知內容
+    lines = [
+        f"**{now.strftime('%H:%M')} 盤中快報**",
+    ]
 
-        from newslib import read_stock_list
-        stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
-        dict_stock = read_stock_list(stock_list_file)
+    # 大盤即時點數
+    if taiex_info:
+        try:
+            idx_price = float(taiex_info.get('z', 0))
+            idx_yesterday = float(taiex_info.get('y', 0))
+            if idx_price > 0 and idx_yesterday > 0:
+                idx_change = idx_price - idx_yesterday
+                idx_pct = (idx_change / idx_yesterday) * 100
+                idx_emoji = "🔴" if idx_change > 0 else "🟢" if idx_change < 0 else "⚪"
+                lines.append(f"{idx_emoji} 加權指數: **{idx_price:,.2f}** ({idx_change:+,.2f} / {idx_pct:+.2f}%)")
+            else:
+                # 盤中 z 可能是 '-'，用最高/最低估算
+                lines.append(f"📊 加權指數: 等待成交...")
+        except Exception:
+            pass
 
-        for name in focus_names:
-            if name in dict_stock:
-                code = str(dict_stock[name])
-                result = particle_model.predict(code, name)
-                if 'error' not in result:
-                    particle_predictions[name] = result
-    except Exception as e:
-        logger.warning(f"粒子模型載入失敗: {e}")
-
-    # GPT 新聞情緒分析（只對焦點股票）
-    gpt_sentiments = {}
-    try:
-        from gpt_sentiment import analyze_stock_with_news
-        for name in focus_names:
-            result = analyze_stock_with_news(name)
-            gpt_sentiments[name] = result
-            logger.info(f"GPT 分析 {name}: {result.get('sentiment')} ({result.get('confidence', 0):.0%})")
-    except Exception as e:
-        logger.warning(f"GPT 分析失敗: {e}")
-
-    # 計算每檔股票漲跌幅
+    # 計算每檔股票的漲跌幅
     stock_changes = []
     for s in stock_prices:
         if s['price'] == '-':
             continue
         try:
             price = float(s['price'])
-            open_p = float(s['open']) if s.get('open', '-') != '-' else None
             yesterday = float(s['yesterday']) if s['yesterday'] != '-' else price
-            if open_p and open_p > 0:
-                change_pct = ((price - open_p) / open_p) * 100
-            else:
-                change_pct = ((price - yesterday) / yesterday) * 100
-            is_focus = s['code'] in focus_codes or s['name'] in focus_names
+            change_pct = ((price - yesterday) / yesterday) * 100
             stock_changes.append({
                 'name': s['name'],
                 'code': s['code'],
                 'price': price,
-                'open': open_p,
                 'change_pct': change_pct,
-                'is_focus': is_focus,
+                'is_priority': s['name'] in PRIORITY_STOCKS
             })
-        except:
+        except Exception:
             continue
 
+    # 依漲跌幅排序（漲最多在前）
     stock_changes.sort(key=lambda x: x['change_pct'], reverse=True)
 
-    # 分開焦點與非焦點
-    focus_changes = [s for s in stock_changes if s['is_focus']]
-    other_changes = [s for s in stock_changes if not s['is_focus']]
+    # 顯示全部股票
+    if stock_changes:
+        lines.append("")
+        for s in stock_changes:
+            emoji = "🔴" if s['change_pct'] > 0 else "🟢" if s['change_pct'] < 0 else "⚪"
+            priority_tag = " ⭐" if s['is_priority'] else ""
+            lines.append(f"{emoji} {s['name']}({s['code']}): ${s['price']:.1f} ({s['change_pct']:+.1f}%){priority_tag}")
 
-    # 建立通知
-    lines = [
-        f"**{now.strftime('%H:%M')} 盤中快報**",
-    ]
+    # 抓取重要新聞並分析
+    if clf and vectorizer:
+        lines.append("")
+        lines.append("**📰 重要新聞：**")
 
-    # === 精追區：焦點 5 檔 ===
-    lines.append("")
-    lines.append("**⭐ 新聞焦點股：**")
-    for s in focus_changes:
-        emoji = "🟢" if s['change_pct'] < 0 else "🔴" if s['change_pct'] > 0 else "⚪"
+        news_items = []
+        # 針對優先股票抓新聞
+        for stock_name in PRIORITY_STOCKS[:2]:
+            try:
+                url, title, body, bs = scrapBingNews(stock_name)
+                if body:
+                    # 提取新聞句子
+                    sentences = re.split(r'[。！？\n]', body)
+                    for sent in sentences[:3]:
+                        sent = sent.strip()
+                        if len(sent) > 15 and stock_name in sent:
+                            pred, conf, _ = hybrid_predict(sent, clf, vectorizer)
+                            news_items.append({
+                                'text': sent[:50] + '...' if len(sent) > 50 else sent,
+                                'prediction': pred,
+                                'stock': stock_name
+                            })
+                            break
+            except Exception:
+                continue
 
-        # 粒子模型 AI 預測
-        ai_tag = ""
-        pred = particle_predictions.get(s['name'])
-        if pred:
-            ai_tag = f" [AI預測: {pred['direction']} {pred['confidence']:.0%}]"
-
-        lines.append(f"{emoji} {s['name']}: ${s['price']:.1f} ({s['change_pct']:+.1f}%){ai_tag}")
-
-        # GPT 情緒
-        gpt = gpt_sentiments.get(s['name'])
-        if gpt:
-            sentiment = gpt.get('sentiment', '中性')
-            confidence = gpt.get('confidence', 0)
-            reason = gpt.get('reason', '')
-            lines.append(f"   └ GPT情緒: {sentiment} ({confidence:.0%}) - {reason}")
-
-    # === 輕追區：其餘股票只列漲跌 ===
-    lines.append("")
-    lines.append("**📊 其餘漲跌：**")
-
-    # 上漲的
-    bulls = [s for s in other_changes if s['change_pct'] > 0]
-    bears = [s for s in other_changes if s['change_pct'] < 0]
-    flats = [s for s in other_changes if s['change_pct'] == 0]
-
-    if bulls:
-        bull_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bulls[:8]])
-        lines.append(f"🔴 {bull_text}")
-    if bears:
-        bear_text = " | ".join([f"{s['name']} {s['change_pct']:+.1f}%" for s in bears[:8]])
-        lines.append(f"🟢 {bear_text}")
-    if flats:
-        flat_text = " | ".join([s['name'] for s in flats[:8]])
-        lines.append(f"⚪ {flat_text}")
+        if news_items:
+            for item in news_items[:3]:
+                emoji = "🟢" if item['prediction'] == '漲' else "🔴" if item['prediction'] == '跌' else "⚪"
+                lines.append(f"{emoji} [{item['stock']}] {item['text']}")
+        else:
+            lines.append("（暫無重大新聞）")
 
     # 統計摘要
     bull_count = sum(1 for s in stock_changes if s['change_pct'] > 0)
     bear_count = sum(1 for s in stock_changes if s['change_pct'] < 0)
-    flat_count = sum(1 for s in stock_changes if s['change_pct'] == 0)
     lines.append("")
-    lines.append(f"📈 上漲: {bull_count} 檔 | 📉 下跌: {bear_count} 檔 | ⚪ 平盤: {flat_count} 檔")
+    lines.append(f"📈 上漲: {bull_count} 檔 | 📉 下跌: {bear_count} 檔")
 
     message = "\n".join(lines)
 
@@ -642,7 +733,7 @@ def monitor_realtime_prices():
     """
     logger.info("=== 開始即時股價監控 ===")
 
-    stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
+    stock_list_file = STOCK_LIST_FILE
     db_file = os.path.join(SCRIPT_DIR, 'Data', 'trace_stock_DB.txt')
 
     columns = ['c', 'n', 'z', 'tv', 'v', 'o', 'h', 'l', 'y']
@@ -659,7 +750,7 @@ def monitor_realtime_prices():
     try:
         from hybrid_predictor import hybrid_predict, load_ml_model
         clf, vectorizer = load_ml_model()
-    except:
+    except Exception:
         clf, vectorizer = None, None
 
     with open(db_file, 'a', encoding='utf-8') as fi:
@@ -699,7 +790,7 @@ def monitor_realtime_prices():
 
                 # 收集股價資料
                 stock_prices = []
-                for i in range(min(len(dict_stock) - 1, len(data['msgArray']))):
+                for i in range(min(len(dict_stock), len(data['msgArray']))):
                     item = data['msgArray'][i]
                     line = ''
                     for column in columns:
@@ -733,7 +824,18 @@ def monitor_realtime_prices():
                     should_notify = True
 
                 if should_notify:
-                    send_prediction_notification(stock_prices, clf, vectorizer, now)
+                    # 抓取大盤加權指數
+                    taiex_info = None
+                    try:
+                        from urllib.request import urlopen as _urlopen
+                        taiex_url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw"
+                        taiex_data = json.loads(_urlopen(taiex_url).read())
+                        if 'msgArray' in taiex_data and len(taiex_data['msgArray']) > 0:
+                            taiex_info = taiex_data['msgArray'][0]
+                    except Exception as e:
+                        logger.warning(f"抓取大盤指數失敗: {e}")
+
+                    send_prediction_notification(stock_prices, clf, vectorizer, now, taiex_info)
                     last_notify_time = now
 
                 if iteration % 10 == 0:
@@ -761,6 +863,9 @@ def main():
     if now.weekday() >= 5:
         logger.info("今天是週末，不執行")
         return
+
+    # 重置 AI 交易日報
+    AI_TRADER.reset_daily()
 
     # 1. 抓取基本面資料
     try:
@@ -810,75 +915,58 @@ def main():
     except Exception as e:
         logger.error(f"發送每日報告失敗: {e}")
 
-    # 8. 每週一自動優化權重
-    if now.weekday() == 0:  # 週一
-        try:
-            logger.info("=== 每週權重優化 ===")
-            run_weekly_optimization()
-        except Exception as e:
-            logger.error(f"權重優化失敗: {e}")
+    # 8. 每日盤後 GA 優化（rolling window + 穩定性檢查）
+    try:
+        logger.info("=== 每日 GA 權重優化 ===")
+        run_daily_ga_optimization()
+    except Exception as e:
+        logger.error(f"每日 GA 優化失敗: {e}")
 
     logger.info("今日任務完成")
 
 
-def run_weekly_optimization():
-    """每週執行權重優化"""
-    from optimize_weights import prepare_test_data, genetic_algorithm, save_weights
-    from newslib import read_stock_list
+def run_daily_ga_optimization():
+    """每日盤後 GA 優化（rolling window + 穩定性檢查）"""
+    from optimize_weights import run_daily_optimization, load_weights
 
-    logger.info("開始遺傳演算法優化...")
+    logger.info("開始每日 GA 優化...")
 
-    # 讀取股票清單
-    stock_list_file = os.path.join(SCRIPT_DIR, 'stock_list_less.txt')
-    dict_stock = read_stock_list(stock_list_file)
-
-    # 選擇測試股票
-    test_stocks = ['2330', '3189', '2454', '2881', '2603']
-
-    # 計算月份
-    today = datetime.date.today()
-    months = []
-    for i in range(2):
-        target_month = today.month - i - 1
-        target_year = today.year
-        if target_month <= 0:
-            target_month += 12
-            target_year -= 1
-        months.append(f'{target_year}{target_month:02d}')
-
-    # 準備資料
-    test_data = prepare_test_data(test_stocks, months)
-
-    if not test_data:
-        logger.warning("無測試資料，跳過優化")
-        return
-
-    # 遺傳演算法優化
-    best_weights, best_accuracy, history = genetic_algorithm(
-        test_data,
+    result = run_daily_optimization(
+        stock_codes=['2330', '3189', '2454', '2881', '2603'],
+        rolling_days=40,
         population_size=30,
         generations=20,
-        mutation_rate=0.2
+        max_drift=0.25,
+        min_improvement=0.005
     )
 
-    # 儲存權重
-    save_weights(best_weights, best_accuracy)
-
     # 發送結果到 Discord
-    message = f'''**🧬 每週權重優化完成**
+    from notifier import send_discord_embed
 
-**🏆 準確率: {best_accuracy:.1%}**
+    status = "✅ 已更新" if result['updated'] else "⚠️ 未更新"
+    color = COLOR_INFO if result['updated'] else COLOR_WARNING
 
-**優化後權重:**
-• 外資大量門檻: {best_weights['foreign_large']} 張
-• 外資中量門檻: {best_weights['foreign_medium']} 張
-• 外資權重: {best_weights['foreign_weight']:.2f}
-• 動量權重: {best_weights['momentum_weight']:.2f}
-• 均線權重: {best_weights['ema_weight']:.2f}
+    fields = [
+        {"name": "狀態", "value": status, "inline": True},
+    ]
 
-下週預測將使用新權重'''
+    if 'new_acc' in result:
+        fields.append({"name": "新準確率", "value": f"{result['new_acc']:.1%}", "inline": True})
+        fields.append({"name": "舊準確率", "value": f"{result['old_acc']:.1%}", "inline": True})
 
-    send_discord(message, title='週一權重優化', channel=DISCORD_CHANNEL)
+    if 'drift' in result:
+        fields.append({"name": "權重漂移", "value": f"{result['drift']:.1%}", "inline": True})
+
+    fields.append({"name": "原因", "value": result['reason'], "inline": False})
+
+    embed = {
+        "title": f"🧬 每日 GA 優化 | {datetime.date.today()}",
+        "color": color,
+        "fields": fields,
+    }
+    send_discord_embed(embed, channel=DISCORD_CHANNEL)
+
+    logger.info(f"每日 GA 優化完成: {result['reason']}")
 
 
 if __name__ == "__main__":
