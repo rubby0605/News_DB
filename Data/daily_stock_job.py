@@ -500,7 +500,7 @@ def send_postmarket_analysis():
         # 發送每日績效 Embed
         send_daily_metrics_summary()
 
-        # AI 紙上交易：GPT Agent 決策 + 日報
+        # AI 紙上交易：盤後日報（交易決策已在盤中每 15 分鐘執行）
         try:
             closing_prices = {}
             for item in data['msgArray']:
@@ -509,42 +509,13 @@ def send_postmarket_analysis():
                 if price_str != '-':
                     closing_prices[code] = float(price_str)
 
-            # 準備預測資料給 GPT Agent
-            all_preds_for_gpt = []
-            for code, pred in PREMARKET_PREDICTIONS.items():
-                pred_copy = dict(pred)
-                pred_copy['stock_code'] = code
-                pred_copy['stock_name'] = pred.get('name', code)
-                all_preds_for_gpt.append(pred_copy)
-
-            # 取得近期準確率
-            recent_accuracy = None
-            try:
-                metrics = get_tracking_metrics()
-                if metrics and metrics.get('accuracy_5d'):
-                    recent_accuracy = metrics['accuracy_5d'] / 100.0
-            except Exception:
-                pass
-
-            # GPT Agent 一次分析所有股票，做出交易決策
-            trade_results = AI_TRADER.evaluate_all_with_gpt(
-                all_preds_for_gpt, closing_prices, recent_accuracy
-            )
-
-            # 發送交易結果到 Discord
-            from notifier import send_discord_embed
-            for result in trade_results:
-                if result['action'] == 'buy':
-                    embed = build_buy_embed(result)
-                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
-                elif result['action'] == 'sell':
-                    embed = build_sell_embed(result)
-                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
-
-            if trade_results:
-                logger.info(f"AI GPT Agent 執行 {len(trade_results)} 筆交易")
+            # 更新持倉現價（用收盤價）
+            for code, pos in AI_TRADER.positions.items():
+                if code in closing_prices:
+                    pos['current_price'] = closing_prices[code]
 
             # 發送每日投資組合日報
+            from notifier import send_discord_embed
             portfolio_embed = build_daily_portfolio_embed(AI_TRADER, closing_prices)
             send_discord_embed(portfolio_embed, channel=AI_TRADE_CHANNEL)
             logger.info("AI 每日交易日報已發送")
@@ -836,6 +807,55 @@ def monitor_realtime_prices():
                         logger.warning(f"抓取大盤指數失敗: {e}")
 
                     send_prediction_notification(stock_prices, clf, vectorizer, now, taiex_info)
+
+                    # GPT Agent 盤中即時決策（每 15 分鐘）
+                    try:
+                        # 建立即時價格 dict
+                        realtime_prices = {}
+                        for sp in stock_prices:
+                            if sp['price'] != '-':
+                                try:
+                                    realtime_prices[sp['code']] = float(sp['price'])
+                                except (ValueError, TypeError):
+                                    pass
+
+                        # 準備焦點股預測資料
+                        focus_preds = []
+                        for code, pred in PREMARKET_PREDICTIONS.items():
+                            if code in realtime_prices:
+                                pred_copy = dict(pred)
+                                pred_copy['stock_code'] = code
+                                pred_copy['stock_name'] = pred.get('name', code)
+                                focus_preds.append(pred_copy)
+
+                        if focus_preds:
+                            recent_accuracy = None
+                            try:
+                                metrics = get_tracking_metrics()
+                                if metrics and metrics.get('accuracy_5d'):
+                                    recent_accuracy = metrics['accuracy_5d'] / 100.0
+                            except Exception:
+                                pass
+
+                            trade_results = AI_TRADER.evaluate_all_with_gpt(
+                                focus_preds, realtime_prices, recent_accuracy
+                            )
+
+                            # 發送交易結果到 Discord
+                            from notifier import send_discord_embed
+                            for result in trade_results:
+                                if result['action'] == 'buy':
+                                    embed = build_buy_embed(result)
+                                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
+                                elif result['action'] == 'sell':
+                                    embed = build_sell_embed(result)
+                                    send_discord_embed(embed, channel=AI_TRADE_CHANNEL)
+
+                            if trade_results:
+                                logger.info(f"盤中 GPT Agent 執行 {len(trade_results)} 筆交易")
+                    except Exception as e:
+                        logger.error(f"盤中 GPT Agent 決策失敗: {e}")
+
                     last_notify_time = now
 
                 if iteration % 10 == 0:
