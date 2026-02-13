@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GPT 新聞情緒分析模組
-使用 OpenAI API 分析股票新聞對股價的影響
+新聞情緒分析模組
+使用 Gemini 2.5 Flash（免費）分析股票新聞對股價的影響
+GPT client 保留供 ai_trader.py 使用
 
 @author: rubylintu
 """
 
 import os
 import json
+import re
 import time
+import urllib.request
+import urllib.error
 from openai import OpenAI
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,7 +53,41 @@ def get_client():
     return OpenAI(api_key=api_key)
 
 
-def analyze_sentiment(news_text, stock_name, model="gpt-3.5-turbo"):
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+
+def _call_gemini(prompt):
+    """用 Gemini REST API 做情緒分析（免費）"""
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY 環境變數未設定")
+
+    url = GEMINI_API_URL + f"?key={api_key}"
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 500,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    data = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    text = result['candidates'][0]['content']['parts'][0]['text']
+    # 清理 trailing comma
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    return json.loads(text)
+
+
+def analyze_sentiment(news_text, stock_name, model="gemini"):
     """
     分析單則新聞的情緒
 
@@ -65,80 +103,37 @@ def analyze_sentiment(news_text, stock_name, model="gpt-3.5-turbo"):
             'reason': '分析理由'
         }
     """
-    client = get_client()
-
     prompt = f"""你是一位專業的台股分析師。請分析以下關於「{stock_name}」的新聞對股價的短期影響。
 
 新聞內容：
 {news_text[:500]}
 
-請用以下 JSON 格式回答（只回答 JSON，不要其他文字）：
-{{
-    "sentiment": "漲" 或 "跌" 或 "中性",
-    "confidence": 0.0 到 1.0 之間的數字（表示信心程度）,
-    "reason": "簡短說明理由（20字以內）"
-}}"""
+請用以下 JSON 格式回答：
+{{"sentiment": "漲" 或 "跌" 或 "中性", "confidence": 0.0到1.0, "reason": "簡短理由20字以內"}}"""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
-            temperature=0.3
-        )
-
-        result_text = response.choices[0].message.content.strip()
-
-        # 解析 JSON
-        # 處理可能的 markdown 格式
-        if result_text.startswith('```'):
-            result_text = result_text.split('```')[1]
-            if result_text.startswith('json'):
-                result_text = result_text[4:]
-
-        result = json.loads(result_text)
-
+        result = _call_gemini(prompt)
         return {
             'sentiment': result.get('sentiment', '中性'),
             'confidence': float(result.get('confidence', 0.5)),
             'reason': result.get('reason', ''),
-            'model': model
+            'model': 'gemini-2.5-flash'
         }
-
-    except json.JSONDecodeError:
-        # 如果 JSON 解析失敗，嘗試從文字中提取
-        if '漲' in result_text:
-            return {'sentiment': '漲', 'confidence': 0.6, 'reason': '關鍵字判斷', 'model': model}
-        elif '跌' in result_text:
-            return {'sentiment': '跌', 'confidence': 0.6, 'reason': '關鍵字判斷', 'model': model}
-        else:
-            return {'sentiment': '中性', 'confidence': 0.5, 'reason': '無法判斷', 'model': model}
-
     except Exception as e:
-        print(f"GPT 分析錯誤: {e}")
-        return {'sentiment': '中性', 'confidence': 0.0, 'reason': f'錯誤: {e}', 'model': model}
+        print(f"Gemini 情緒分析錯誤: {e}")
+        return {'sentiment': '中性', 'confidence': 0.0, 'reason': f'錯誤: {e}', 'model': 'gemini-error'}
 
 
-def analyze_multiple_news(news_list, stock_name, model="gpt-3.5-turbo"):
+def analyze_multiple_news(news_list, stock_name, model="gemini"):
     """
-    分析多則新聞並綜合判斷
-
-    Args:
-        news_list: [{'title': '...', 'content': '...'}, ...]
-        stock_name: 股票名稱
-
-    Returns:
-        dict: 綜合分析結果
+    分析多則新聞並綜合判斷（使用 Gemini）
     """
     if not news_list:
         return {'sentiment': '中性', 'confidence': 0.0, 'reason': '無新聞資料'}
 
-    client = get_client()
-
-    # 組合新聞摘要
     news_summary = "\n".join([
         f"- {news.get('title', news.get('content', '')[:50])}"
-        for news in news_list[:5]  # 最多 5 則
+        for news in news_list[:5]
     ])
 
     prompt = f"""你是一位專業的台股分析師。請綜合分析以下關於「{stock_name}」的多則新聞，判斷對股價的短期影響。
@@ -146,42 +141,21 @@ def analyze_multiple_news(news_list, stock_name, model="gpt-3.5-turbo"):
 近期新聞標題：
 {news_summary}
 
-請用以下 JSON 格式回答（只回答 JSON）：
-{{
-    "sentiment": "漲" 或 "跌" 或 "中性",
-    "confidence": 0.0 到 1.0,
-    "reason": "綜合分析理由（30字以內）",
-    "key_news": "最重要的一則新聞標題"
-}}"""
+請用 JSON 格式回答：
+{{"sentiment": "漲"或"跌"或"中性", "confidence": 0.0到1.0, "reason": "綜合理由30字以內", "key_news": "最重要的一則新聞標題"}}"""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
-            temperature=0.3
-        )
-
-        result_text = response.choices[0].message.content.strip()
-
-        if result_text.startswith('```'):
-            result_text = result_text.split('```')[1]
-            if result_text.startswith('json'):
-                result_text = result_text[4:]
-
-        result = json.loads(result_text)
-
+        result = _call_gemini(prompt)
         return {
             'sentiment': result.get('sentiment', '中性'),
             'confidence': float(result.get('confidence', 0.5)),
             'reason': result.get('reason', ''),
             'key_news': result.get('key_news', ''),
-            'model': model,
+            'model': 'gemini-2.5-flash',
             'news_count': len(news_list)
         }
-
     except Exception as e:
-        print(f"GPT 綜合分析錯誤: {e}")
+        print(f"Gemini 綜合分析錯誤: {e}")
         return {'sentiment': '中性', 'confidence': 0.0, 'reason': f'錯誤: {e}'}
 
 
@@ -229,7 +203,7 @@ def analyze_stock_with_news(stock_name, model="gpt-3.5-turbo"):
     return result
 
 
-def batch_analyze_stocks(stock_names, model="gpt-3.5-turbo", delay=1.0):
+def batch_analyze_stocks(stock_names, model="gemini", delay=1.0):
     """
     批次分析多檔股票
 
@@ -255,25 +229,13 @@ def batch_analyze_stocks(stock_names, model="gpt-3.5-turbo", delay=1.0):
     return results
 
 
-def select_top_stocks(all_news_summary, num_stocks=5, model="gpt-3.5-turbo"):
+def select_top_stocks(all_news_summary, num_stocks=5, model="gemini"):
     """
-    從所有股票的新聞摘要中選出最值得關注的股票
-
-    Args:
-        all_news_summary: {stock_name: [news_titles], ...}
-        num_stocks: 要選幾檔（預設 5）
-        model: 使用的模型
-
-    Returns:
-        list: [{'name': '台積電', 'code': '2330', 'reason': '...'}, ...]
+    從所有股票的新聞摘要中選出最值得關注的股票（使用 Gemini）
     """
-    client = get_client()
-
-    # 讀取股票代號對照表
     stock_code_map = {}
     try:
         from newslib import read_stock_list
-        import os
         script_dir = os.path.dirname(os.path.abspath(__file__))
         stock_list_file = os.path.join(script_dir, 'stock_list_less.txt')
         dict_stock = read_stock_list(stock_list_file)
@@ -281,7 +243,6 @@ def select_top_stocks(all_news_summary, num_stocks=5, model="gpt-3.5-turbo"):
     except Exception:
         pass
 
-    # 建立新聞摘要文字
     summary_lines = []
     for name, titles in all_news_summary.items():
         code = stock_code_map.get(name, '?')
@@ -307,66 +268,35 @@ def select_top_stocks(all_news_summary, num_stocks=5, model="gpt-3.5-turbo"):
 各股票新聞摘要：
 {news_text}
 
-請用以下 JSON 格式回答（只回答 JSON，不要其他文字）：
-{{
-    "selected": [
-        {{"name": "股票名稱", "code": "股票代號", "reason": "選中理由（30字以內）"}},
-        ...共 {num_stocks} 檔
-    ]
-}}"""
+請用 JSON 格式回答：
+{{"selected": [{{"name": "股票名稱", "code": "股票代號", "reason": "選中理由30字以內"}}]}}
+共選 {num_stocks} 檔。"""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0.3
-        )
-
-        result_text = response.choices[0].message.content.strip()
-
-        # 處理可能的 markdown 格式
-        if result_text.startswith('```'):
-            result_text = result_text.split('```')[1]
-            if result_text.startswith('json'):
-                result_text = result_text[4:]
-
-        result = json.loads(result_text)
+        result = _call_gemini(prompt)
         selected = result.get('selected', [])
 
-        # 確保每個選中的股票都有 code
         for item in selected:
             if not item.get('code') or item['code'] == '?':
                 item['code'] = stock_code_map.get(item.get('name', ''), '')
 
         return selected[:num_stocks]
 
-    except json.JSONDecodeError as e:
-        print(f"GPT 選股 JSON 解析失敗: {e}")
-        return []
     except Exception as e:
-        print(f"GPT 選股錯誤: {e}")
+        print(f"Gemini 選股錯誤: {e}")
         return []
 
 
 def test_api():
-    """測試 API 連線"""
-    print("測試 OpenAI API 連線...")
+    """測試 Gemini API 連線"""
+    print("測試 Gemini API 連線...")
 
     try:
-        client = get_client()
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "說 OK"}],
-            max_tokens=5
-        )
-
-        print(f"API 連線成功！回應: {response.choices[0].message.content}")
+        result = _call_gemini('回覆 JSON: {"status": "ok"}')
+        print(f"Gemini API 連線成功！回應: {result}")
         return True
-
     except Exception as e:
-        print(f"API 連線失敗: {e}")
+        print(f"Gemini API 連線失敗: {e}")
         return False
 
 
