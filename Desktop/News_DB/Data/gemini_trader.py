@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI 紙上交易引擎
+Gemini AI 紙上交易引擎
 
-模擬 100 萬 TWD 虛擬資金自動選股買賣。
-基於粒子模型預測（方向 + 信心度 + bias）決定進出場。
+與 GPT 版 (ai_trader.py) 完全相同的邏輯，
+只是改用 Google Gemini 做決策，用獨立帳戶做 PK 比賽。
 
 @author: rubylintu
 """
@@ -13,9 +13,12 @@ import os
 import json
 import datetime
 import logging
+import re
+import urllib.request
+import urllib.error
 
 from config import (
-    PORTFOLIO_FILE,
+    GEMINI_PORTFOLIO_FILE,
     BROKER_FEE_RATE, SECURITIES_TAX_RATE, LOT_SIZE,
     INITIAL_CAPITAL, MAX_POSITIONS, POSITION_WEIGHT,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT,
@@ -24,33 +27,70 @@ from config import (
     COLOR_BULLISH, COLOR_BEARISH, COLOR_INFO, COLOR_WARNING,
     COLOR_PROFIT, COLOR_LOSS,
 )
-from gpt_sentiment import get_client
 
 logger = logging.getLogger(__name__)
 
-# ─── GPT 交易績效評分 ───
+# ─── Gemini REST API（不依賴 SDK 版本）───
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+def _call_gemini(prompt, system_prompt=""):
+    """
+    直接用 REST API 呼叫 Gemini，不依賴 google-generativeai SDK。
+    回傳 Gemini 生成的文字。
+    """
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY 環境變數未設定")
+
+    url = GEMINI_API_URL.format(model=GEMINI_MODEL) + f"?key={api_key}"
+
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 2000,
+            "responseMimeType": "application/json",
+        },
+    }
+    if system_prompt:
+        body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+
+    data = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    # 解析 Gemini 回覆
+    candidates = result.get('candidates', [])
+    if not candidates:
+        raise ValueError(f"Gemini 無回覆: {result}")
+    text = candidates[0]['content']['parts'][0]['text']
+    return text
+
+
+# ─── Gemini 交易績效評分（與 GPT 版相同）───
 
 def build_performance_report(trade_history, positions):
     """
-    根據歷史交易生成 GPT 的「成績單」，讓它看到自己的行為後果。
-
-    評分項目：
-    - 勝率得分（勝率越高越好）
-    - 持有耐心分（平均持有天數越長越好，短線洗單扣分）
-    - 手續費效率（手續費佔交易額比例越低越好）
-    - 淨利得分（有賺錢才有分）
+    根據歷史交易生成 Gemini 的「成績單」。
+    評分邏輯與 GPT 版完全相同。
     """
     if not trade_history:
         return "", 0
 
-    recent = trade_history[-20:]  # 看最近 20 筆
+    recent = trade_history[-20:]
 
-    # 基本統計
     wins = [t for t in recent if t['realized_pnl'] >= 0]
     losses = [t for t in recent if t['realized_pnl'] < 0]
     win_rate = len(wins) / len(recent) if recent else 0
 
-    # 持有時間分析
     hold_hours = []
     for t in recent:
         try:
@@ -62,42 +102,32 @@ def build_performance_report(trade_history, positions):
             pass
 
     avg_hold_hours = sum(hold_hours) / len(hold_hours) if hold_hours else 0
-    short_trades = sum(1 for h in hold_hours if h < 24)  # 24 小時內賣掉的
+    short_trades = sum(1 for h in hold_hours if h < 24)
 
-    # 手續費分析
     total_fees = sum(t.get('total_fees', 0) for t in recent)
     total_volume = sum(abs(t.get('net_proceeds', 0)) + abs(t.get('buy_cost', 0)) for t in recent)
     fee_ratio = total_fees / total_volume * 100 if total_volume > 0 else 0
 
-    # 淨損益
     total_pnl = sum(t['realized_pnl'] for t in recent)
 
-    # === 計算綜合評分 (0-100) ===
-    score = 50  # 起始分
-
-    # 勝率加減分（勝率 50% 為基準）
-    score += (win_rate - 0.5) * 40  # 勝率每高10%加4分
-
-    # 耐心加減分（平均持有 72 小時=3天為基準）
+    score = 50
+    score += (win_rate - 0.5) * 40
     if avg_hold_hours >= 72:
-        score += 15  # 有耐心 +15
+        score += 15
     elif avg_hold_hours >= 24:
-        score += 5   # 至少過夜 +5
+        score += 5
     else:
-        score -= 20  # 當沖級別 -20
+        score -= 20
 
-    # 短線洗單懲罰
     churn_rate = short_trades / len(recent) if recent else 0
     if churn_rate > 0.5:
-        score -= 20  # 超過一半都是短線 → 嚴重扣分
+        score -= 20
 
-    # 手續費效率
     if fee_ratio > 3:
-        score -= 15  # 手續費佔比太高
+        score -= 15
     elif fee_ratio > 1:
         score -= 5
 
-    # 淨利加分
     if total_pnl > 0:
         score += 10
     elif total_pnl < -10000:
@@ -105,10 +135,8 @@ def build_performance_report(trade_history, positions):
 
     score = max(0, min(100, score))
 
-    # === 生成報告文字 ===
     grade = "S" if score >= 90 else "A" if score >= 75 else "B" if score >= 60 else "C" if score >= 40 else "D" if score >= 20 else "F"
 
-    # 找出重複買賣的股票
     from collections import Counter
     traded_codes = [t['stock_code'] for t in recent]
     repeat_stocks = {code: cnt for code, cnt in Counter(traded_codes).items() if cnt >= 3}
@@ -128,22 +156,21 @@ def build_performance_report(trade_history, positions):
     return report, score
 
 
-# ─── GPT Agent 決策 ───
+# ─── Gemini Agent 決策 ───
 
-GPT_MODEL = "gpt-4o"
-
-
-def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accuracy=None, trade_history=None, ta_reports=None):
+def ask_gemini_decision(all_predictions, portfolio_summary, positions, recent_accuracy=None, trade_history=None, ta_reports=None):
     """
-    用 GPT 做交易決策：分析所有股票預測 + 持倉狀態，回傳買賣建議
+    用 Gemini 做交易決策：與 GPT 版完全相同的 prompt，只是改用 Gemini API。
 
     Returns:
         list[dict]: [{"action": "buy"/"sell"/"hold", "code": "2330", "reason": "..."}]
     """
     try:
-        client = get_client()
+        # 先檢查 API key
+        if not os.environ.get('GEMINI_API_KEY'):
+            raise ValueError("GEMINI_API_KEY 未設定")
     except Exception as e:
-        logger.warning(f"GPT client 初始化失敗，退回規則模式: {e}")
+        logger.warning(f"Gemini 初始化失敗，退回規則模式: {e}")
         return None
 
     # 整理持倉資訊
@@ -164,11 +191,10 @@ def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accur
         )
     holdings_str = '\n'.join(holding_lines) if holding_lines else '  無持倉'
 
-    # 技術分析報告（優先使用傳入的完整 TA）
+    # 技術分析報告
     if ta_reports:
-        ta_section = '\n\n'.join(ta_reports[:10])  # 最多 10 檔完整 TA
+        ta_section = '\n\n'.join(ta_reports[:10])
     else:
-        # Fallback: 舊格式
         pred_lines = []
         for p in all_predictions:
             direction = p.get('direction', '')
@@ -195,7 +221,6 @@ def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accur
     if trade_history:
         perf_report, perf_score = build_performance_report(trade_history, positions)
 
-    # 組裝 prompt
     accuracy_str = f"近5天預測準確率: {recent_accuracy:.0%}" if recent_accuracy else ""
 
     prompt = f"""根據以下技術分析數據做出交易決策。
@@ -255,47 +280,48 @@ def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accur
 "market_view": "20字以內今日盤勢觀點"}}"""
 
     try:
-        response = client.chat.completions.create(
-            model=GPT_MODEL,
-            messages=[
-                {"role": "system", "content": (
-                    "你是專業台股技術分析師兼波段交易員。"
-                    "你擅長閱讀 K 線、均線、MACD、KD、RSI、布林通道、量價關係。"
-                    "你的決策必須基於技術指標的交叉確認，不是直覺。"
-                    f"你的績效評分: {perf_score}/100。"
-                    f"{'⚠️ 評分偏低！你之前交易太頻繁，現在要更有耐心。' if perf_score < 60 else ''}"
-                    "原則：多方確認才進場，趨勢反轉才出場，不確定就不動。只回覆 JSON。"
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,  # 交易決策要穩定
-            max_tokens=1000,
-            response_format={"type": "json_object"},
+        system_prompt = (
+            "你是專業台股技術分析師兼波段交易員。"
+            "你擅長閱讀 K 線、均線、MACD、KD、RSI、布林通道、量價關係。"
+            "你的決策必須基於技術指標的交叉確認，不是直覺。"
+            f"你的績效評分: {perf_score}/100。"
+            f"{'⚠️ 評分偏低！你之前交易太頻繁，現在要更有耐心。' if perf_score < 60 else ''}"
+            "原則：多方確認才進場，趨勢反轉才出場，不確定就不動。只回覆 JSON。"
         )
-        text = response.choices[0].message.content
+
+        text = _call_gemini(prompt, system_prompt=system_prompt)
+
+        # Gemini 有時會用 markdown code block 包 JSON
+        json_match = re.search(r'```(?:json)?\s*(.*?)```', text, re.DOTALL)
+        if json_match:
+            text = json_match.group(1).strip()
+
+        # 清理常見的 JSON 問題（trailing comma 等）
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+
         data = json.loads(text)
         decisions = data.get('decisions', [])
         market_view = data.get('market_view', '')
 
-        logger.info(f"GPT 交易決策: {len(decisions)} 個指令, 盤勢觀點: {market_view}")
+        logger.info(f"Gemini 交易決策: {len(decisions)} 個指令, 盤勢觀點: {market_view}")
         for d in decisions:
             logger.info(f"  {d['action'].upper()} {d['code']}: {d['reason']}")
 
         return decisions
 
     except Exception as e:
-        logger.error(f"GPT 決策失敗: {e}")
+        logger.error(f"Gemini 決策失敗: {e}")
         return None
 
 
-class AITrader:
-    """AI 紙上交易引擎"""
+class GeminiTrader:
+    """Gemini AI 紙上交易引擎（與 AITrader 邏輯完全相同，獨立帳戶）"""
 
     def __init__(self, initial_capital=INITIAL_CAPITAL):
         self.initial_capital = initial_capital
         self.cash = initial_capital
-        self.positions = {}       # {code: {name, shares, buy_price, buy_cost, buy_time, reason, broker_fee}}
-        self.trade_history = []   # list of completed trades
+        self.positions = {}
+        self.trade_history = []
         self.daily_pnl = 0.0
         self.cumulative_stats = {
             'total_realized_pnl': 0.0,
@@ -306,15 +332,13 @@ class AITrader:
         self._loaded_date = None
         self.load_portfolio()
 
-    # ─── 持久化 ───
+    # ─── 持久化（使用 gemini_portfolio.json）───
 
     def load_portfolio(self):
-        """從 ai_portfolio.json 載入"""
-        if not os.path.exists(PORTFOLIO_FILE):
+        if not os.path.exists(GEMINI_PORTFOLIO_FILE):
             return
-
         try:
-            with open(PORTFOLIO_FILE, 'r', encoding='utf-8') as f:
+            with open(GEMINI_PORTFOLIO_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             return
@@ -329,44 +353,31 @@ class AITrader:
         self.cumulative_stats = data.get('cumulative_stats', self.cumulative_stats)
         self._loaded_date = saved_date
 
-        # 新的一天 → 重置 daily_pnl
         if saved_date == today:
             self.daily_pnl = data.get('daily_pnl', 0.0)
         else:
             self.daily_pnl = 0.0
 
     def save_portfolio(self):
-        """儲存到 ai_portfolio.json"""
         data = {
             'date': datetime.date.today().isoformat(),
             'initial_capital': self.initial_capital,
             'cash': round(self.cash, 2),
             'positions': self.positions,
-            'trade_history': self.trade_history[-90:],  # 只保留 90 筆
+            'trade_history': self.trade_history[-90:],
             'daily_pnl': round(self.daily_pnl, 2),
             'cumulative_stats': self.cumulative_stats,
         }
-        with open(PORTFOLIO_FILE, 'w', encoding='utf-8') as f:
+        with open(GEMINI_PORTFOLIO_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # ─── 核心交易邏輯 ───
+    # ─── 核心交易邏輯（與 AITrader 完全相同）───
 
-    def evaluate_all_with_gpt(self, all_predictions, current_prices, recent_accuracy=None, ta_reports=None):
-        """
-        GPT Agent 主入口：一次看完所有股票，做出整體交易決策
-
-        Args:
-            all_predictions: list[dict] 所有股票預測
-            current_prices: dict {code: price} 當前價格
-            recent_accuracy: float 近期預測準確率
-            ta_reports: list[str] 完整技術分析報告（每檔一份）
-
-        Returns:
-            list[dict]: 所有交易結果
-        """
+    def evaluate_all_with_gemini(self, all_predictions, current_prices, recent_accuracy=None, ta_reports=None):
+        """Gemini Agent 主入口"""
         results = []
 
-        # 1. 先執行硬性停損停利（不需 GPT 判斷）
+        # 1. 硬性停損停利
         for code in list(self.positions.keys()):
             price = current_prices.get(code)
             if not price:
@@ -383,31 +394,31 @@ class AITrader:
                 if result:
                     results.append(result)
 
-        # 2. 更新持倉的現價（給 GPT 參考）
+        # 2. 更新持倉現價
         for code, pos in self.positions.items():
             if code in current_prices:
                 pos['current_price'] = current_prices[code]
 
-        # 3. 呼叫 GPT 做決策
+        # 3. 呼叫 Gemini 做決策
         summary = self.get_portfolio_summary(current_prices)
-        decisions = ask_gpt_decision(
+        decisions = ask_gemini_decision(
             all_predictions, summary, self.positions, recent_accuracy,
             trade_history=self.trade_history, ta_reports=ta_reports
         )
 
         if not decisions:
-            logger.warning("GPT 決策失敗，退回規則模式")
+            logger.warning("Gemini 決策失敗，退回規則模式")
             return self._fallback_rule_based(all_predictions, current_prices) + results
 
-        # 4. 執行 GPT 的決策（有 guardrails）
-        gpt_log = []
+        # 4. 執行決策（有 guardrails）
+        gemini_log = []
         for d in decisions:
             action = d.get('action', '')
             code = d.get('code', '')
-            reason = d.get('reason', 'GPT 決策')
+            reason = d.get('reason', 'Gemini 決策')
 
             if action == 'buy' and code not in self.positions:
-                # Cooldown: 最近賣出的股票不能馬上買回
+                # Cooldown
                 recently_sold = False
                 for t in reversed(self.trade_history):
                     if t['stock_code'] == code:
@@ -416,28 +427,25 @@ class AITrader:
                             hours_since = (datetime.datetime.now() - sell_dt).total_seconds() / 3600
                             if hours_since < COOLDOWN_HOURS:
                                 recently_sold = True
-                                gpt_log.append(f"BLOCKED BUY {code}: 賣出後僅{hours_since:.0f}小時，冷卻{COOLDOWN_HOURS}小時")
+                                gemini_log.append(f"BLOCKED BUY {code}: 賣出後僅{hours_since:.0f}小時，冷卻{COOLDOWN_HOURS}小時")
                         except Exception:
                             pass
                         break
                 if recently_sold:
                     continue
 
-                # 找到對應的預測和價格
                 price = current_prices.get(code)
                 pred = next((p for p in all_predictions if p.get('stock_code') == code), None)
                 name = pred.get('stock_name', code) if pred else code
 
                 if price and price > 0 and len(self.positions) < MAX_POSITIONS:
-                    # GPT 建議買入，用 GPT 的理由替換
                     result = self.execute_buy(code, name, price, pred or {}, reason_override=reason)
                     if result:
-                        result['gpt_reason'] = reason
+                        result['gemini_reason'] = reason
                         results.append(result)
-                        gpt_log.append(f"BUY {code} {name}: {reason}")
+                        gemini_log.append(f"BUY {code} {name}: {reason}")
 
             elif action == 'sell' and code in self.positions:
-                # Guardrail: 未滿最低持有天數，擋住 GPT 賣出
                 pos = self.positions[code]
                 try:
                     buy_dt = datetime.datetime.fromisoformat(pos['buy_time'])
@@ -446,29 +454,27 @@ class AITrader:
                     hold_days = 0
 
                 if hold_days < MIN_HOLD_DAYS:
-                    # 檢查是否為停損（停損不受持有天數限制）
                     cur_price = current_prices.get(code, pos['buy_price'])
                     pnl_pct = (cur_price - pos['buy_price']) / pos['buy_price'] * 100
                     if pnl_pct > STOP_LOSS_PCT:
-                        gpt_log.append(f"BLOCKED SELL {code}: 持有僅{hold_days}天 < {MIN_HOLD_DAYS}天，繼續持有")
+                        gemini_log.append(f"BLOCKED SELL {code}: 持有僅{hold_days}天 < {MIN_HOLD_DAYS}天，繼續持有")
                         continue
 
                 price = current_prices.get(code, self.positions[code]['buy_price'])
-                result = self.execute_sell(code, price, f'GPT: {reason}')
+                result = self.execute_sell(code, price, f'Gemini: {reason}')
                 if result:
                     results.append(result)
-                    gpt_log.append(f"SELL {code}: {reason}")
+                    gemini_log.append(f"SELL {code}: {reason}")
 
             elif action == 'hold':
-                gpt_log.append(f"HOLD {code}: {reason}")
+                gemini_log.append(f"HOLD {code}: {reason}")
 
-        if gpt_log:
-            logger.info(f"GPT Agent 執行結果:\n  " + '\n  '.join(gpt_log))
+        if gemini_log:
+            logger.info(f"Gemini Agent 執行結果:\n  " + '\n  '.join(gemini_log))
 
         return results
 
     def _fallback_rule_based(self, all_predictions, current_prices):
-        """GPT 失敗時的退回規則模式"""
         results = []
         for pred in all_predictions:
             code = pred.get('stock_code', '')
@@ -482,39 +488,19 @@ class AITrader:
         return results
 
     def evaluate_and_trade(self, stock_code, stock_name, current_price, prediction):
-        """
-        規則模式主入口：評估預測並決定買賣（GPT 失敗時的 fallback）
-
-        Returns:
-            dict or None: 交易結果 {'action': 'buy'/'sell', ...}
-        """
         if not prediction or not current_price or current_price <= 0:
             return None
-
-        # 先檢查賣出（持倉股）
         if stock_code in self.positions:
             sell_result = self._check_sell_conditions(stock_code, current_price, prediction)
             if sell_result:
                 return sell_result
-
-        # 再檢查買入（未持有股）
         if stock_code not in self.positions:
             buy_result = self._check_buy_conditions(stock_code, stock_name, current_price, prediction)
             if buy_result:
                 return buy_result
-
         return None
 
     def _check_buy_conditions(self, stock_code, stock_name, current_price, prediction):
-        """
-        買入條件（全部滿足才買）：
-        1. direction == '漲'
-        2. confidence >= 0.70
-        3. bias >= 3.0
-        4. warnings <= MAX_WARNINGS
-        5. 未持有此股
-        6. 持倉數 < MAX_POSITIONS
-        """
         direction = prediction.get('direction', '')
         confidence = prediction.get('confidence', 0)
         bias = prediction.get('bias', 0)
@@ -534,48 +520,32 @@ class AITrader:
         return self.execute_buy(stock_code, stock_name, current_price, prediction)
 
     def _check_sell_conditions(self, stock_code, current_price, prediction):
-        """
-        賣出條件（任一成立即賣）：
-        1. 停損：跌 >= 3%
-        2. 停利：漲 >= 5%
-        3. 方向反轉：預測跌 + confidence >= 0.65
-        """
         pos = self.positions[stock_code]
         buy_price = pos['buy_price']
         pnl_pct = (current_price - buy_price) / buy_price * 100
 
-        # 停損
         if pnl_pct <= STOP_LOSS_PCT:
-            return self.execute_sell(stock_code, current_price,
-                                    f'停損 ({pnl_pct:+.1f}%)')
-
-        # 停利
+            return self.execute_sell(stock_code, current_price, f'停損 ({pnl_pct:+.1f}%)')
         if pnl_pct >= TAKE_PROFIT_PCT:
-            return self.execute_sell(stock_code, current_price,
-                                    f'停利 ({pnl_pct:+.1f}%)')
+            return self.execute_sell(stock_code, current_price, f'停利 ({pnl_pct:+.1f}%)')
 
-        # 方向反轉
         direction = prediction.get('direction', '')
         confidence = prediction.get('confidence', 0)
         if direction == '跌' and confidence >= SELL_CONFIDENCE:
-            return self.execute_sell(stock_code, current_price,
-                                    f'方向反轉 跌 {confidence:.0%}')
+            return self.execute_sell(stock_code, current_price, f'方向反轉 跌 {confidence:.0%}')
 
         return None
 
     def execute_buy(self, stock_code, stock_name, price, prediction, reason_override=None):
-        """模擬買入"""
-        # 計算持倉市值（用買入價近似）
         positions_value = sum(p['shares'] * p['buy_price'] for p in self.positions.values())
         total_value = self.cash + positions_value
 
         position_value = total_value * POSITION_WEIGHT
-        position_value = min(position_value, self.cash * 0.95)  # 留 5% buffer
+        position_value = min(position_value, self.cash * 0.95)
 
         if position_value <= 0:
             return None
 
-        # 計算股數（優先整張，不夠就零股）
         if price * LOT_SIZE <= position_value:
             shares = int(position_value / price / LOT_SIZE) * LOT_SIZE
         else:
@@ -591,10 +561,8 @@ class AITrader:
         if total_cost > self.cash:
             return None
 
-        # 執行買入
         self.cash -= total_cost
 
-        # 買入理由：GPT 優先，否則從信號提取
         if reason_override:
             reason = reason_override
         else:
@@ -616,7 +584,7 @@ class AITrader:
         }
 
         self.save_portfolio()
-        logger.info(f"AI 買入 {stock_name}({stock_code}) {shares}股 @ ${price:.1f} 共${total_cost:,.0f}")
+        logger.info(f"Gemini 買入 {stock_name}({stock_code}) {shares}股 @ ${price:.1f} 共${total_cost:,.0f}")
 
         return {
             'action': 'buy',
@@ -633,10 +601,9 @@ class AITrader:
         }
 
     def execute_sell(self, stock_code, price, reason):
-        """模擬賣出"""
         pos = self.positions.get(stock_code)
         if not pos:
-            logger.warning(f"嘗試賣出 {stock_code} 但無持倉")
+            logger.warning(f"Gemini 嘗試賣出 {stock_code} 但無持倉")
             return None
 
         shares = pos['shares']
@@ -654,11 +621,9 @@ class AITrader:
         realized_pnl = net_proceeds - buy_cost
         pnl_pct = realized_pnl / buy_cost * 100 if buy_cost > 0 else 0
 
-        # 計算完成後才移除持倉
         self.positions.pop(stock_code)
         self.cash += net_proceeds
 
-        # 持有時間
         try:
             buy_dt = datetime.datetime.fromisoformat(buy_time)
             hold_duration = datetime.datetime.now() - buy_dt
@@ -666,7 +631,6 @@ class AITrader:
         except Exception:
             hold_str = '未知'
 
-        # 記錄交易
         trade_record = {
             'stock_code': stock_code,
             'stock_name': stock_name,
@@ -685,7 +649,6 @@ class AITrader:
         }
         self.trade_history.append(trade_record)
 
-        # 更新統計
         self.daily_pnl += realized_pnl
         self.cumulative_stats['total_realized_pnl'] = round(
             self.cumulative_stats['total_realized_pnl'] + realized_pnl, 2)
@@ -696,7 +659,7 @@ class AITrader:
             self.cumulative_stats['loss_count'] += 1
 
         self.save_portfolio()
-        logger.info(f"AI 賣出 {stock_name}({stock_code}) {shares}股 @ ${price:.1f} "
+        logger.info(f"Gemini 賣出 {stock_name}({stock_code}) {shares}股 @ ${price:.1f} "
                     f"損益 ${realized_pnl:+,.0f} ({pnl_pct:+.1f}%) [{reason}]")
 
         return {
@@ -715,100 +678,9 @@ class AITrader:
             'portfolio_summary': self.get_portfolio_summary(),
         }
 
-    # ─── 買賣點偵測（不一定成交，但通知用戶）───
-
-    def detect_signals(self, stock_code, stock_name, current_price, prediction):
-        """
-        偵測買點/賣點訊號（不執行交易，僅回報信號）
-
-        Returns:
-            dict or None: {
-                'signal': 'buy_signal' / 'sell_signal',
-                'stock_code', 'stock_name', 'price',
-                'direction', 'confidence', 'bias',
-                'reason': str,
-                'can_execute': bool,  # 是否可以實際交易
-                'block_reason': str,  # 不能交易的原因
-            }
-        """
-        if not prediction or not current_price or current_price <= 0:
-            return None
-
-        direction = prediction.get('direction', '')
-        confidence = prediction.get('confidence', 0)
-        bias = prediction.get('bias', 0)
-        warnings = prediction.get('warnings', [])
-
-        # 買點偵測
-        if (direction == '漲' and confidence >= BUY_CONFIDENCE and bias >= BUY_BIAS
-                and len(warnings) <= MAX_WARNINGS):
-            can_execute = True
-            block_reason = ''
-
-            if stock_code in self.positions:
-                can_execute = False
-                block_reason = '已持有'
-            elif len(self.positions) >= MAX_POSITIONS:
-                can_execute = False
-                block_reason = f'持倉已滿 {MAX_POSITIONS} 檔'
-
-            # 從信號提取理由
-            signals = prediction.get('signals', {})
-            reason_parts = []
-            for key in ['foreign', 'momentum', 'ema']:
-                if key in signals:
-                    reason_parts.append(signals[key])
-            reason = ' | '.join(reason_parts) if reason_parts else f'信心度 {confidence:.0%}'
-
-            return {
-                'signal': 'buy_signal',
-                'stock_code': stock_code,
-                'stock_name': stock_name,
-                'price': current_price,
-                'direction': direction,
-                'confidence': confidence,
-                'bias': bias,
-                'reason': reason,
-                'can_execute': can_execute,
-                'block_reason': block_reason,
-            }
-
-        # 賣點偵測（只對持倉股）
-        if stock_code in self.positions:
-            pos = self.positions[stock_code]
-            buy_price = pos['buy_price']
-            pnl_pct = (current_price - buy_price) / buy_price * 100
-
-            sell_reason = None
-            if pnl_pct <= STOP_LOSS_PCT:
-                sell_reason = f'停損 ({pnl_pct:+.1f}%)'
-            elif pnl_pct >= TAKE_PROFIT_PCT:
-                sell_reason = f'停利 ({pnl_pct:+.1f}%)'
-            elif direction == '跌' and confidence >= SELL_CONFIDENCE:
-                sell_reason = f'方向反轉 跌 {confidence:.0%}'
-
-            if sell_reason:
-                return {
-                    'signal': 'sell_signal',
-                    'stock_code': stock_code,
-                    'stock_name': stock_name,
-                    'price': current_price,
-                    'direction': direction,
-                    'confidence': confidence,
-                    'bias': bias,
-                    'buy_price': buy_price,
-                    'pnl_pct': pnl_pct,
-                    'reason': sell_reason,
-                    'can_execute': True,
-                    'block_reason': '',
-                }
-
-        return None
-
     # ─── Portfolio 查詢 ───
 
     def get_portfolio_summary(self, current_prices=None):
-        """取得投資組合摘要"""
         positions_value = 0
         unrealized_pnl = 0
         positions_detail = []
@@ -858,13 +730,11 @@ class AITrader:
         }
 
     def reset_daily(self):
-        """每日重置"""
         self.daily_pnl = 0.0
         self.save_portfolio()
 
     @staticmethod
     def _format_duration(td):
-        """timedelta → 中文可讀"""
         total_seconds = int(td.total_seconds())
         days = total_seconds // 86400
         hours = (total_seconds % 86400) // 3600
@@ -877,10 +747,10 @@ class AITrader:
             return f'{minutes}分'
 
 
-# ─── Discord Embed 建構 ───
+# ─── Discord Embed 建構（標記為 Gemini）───
 
-def build_buy_embed(trade_result):
-    """建構買入通知 Embed"""
+def build_gemini_buy_embed(trade_result):
+    """建構 Gemini 買入通知 Embed"""
     code = trade_result['stock_code']
     name = trade_result['stock_name']
     price = trade_result['price']
@@ -890,7 +760,6 @@ def build_buy_embed(trade_result):
     reason = trade_result['reason']
     summary = trade_result['portfolio_summary']
 
-    # 股數描述
     lots = shares // LOT_SIZE
     odd = shares % LOT_SIZE
     if lots > 0 and odd > 0:
@@ -902,12 +771,8 @@ def build_buy_embed(trade_result):
 
     now = datetime.datetime.now()
 
-    # GPT 決策標記
-    gpt_reason = trade_result.get('gpt_reason', '')
-    title_prefix = "🤖 GPT" if gpt_reason else "🔴 AI"
-
     embed = {
-        "title": f"{title_prefix} 買入 | {code} {name}",
+        "title": f"💎 Gemini 買入 | {code} {name}",
         "color": COLOR_BULLISH,
         "fields": [
             {"name": "買入價", "value": f"**${price:,.1f}**", "inline": True},
@@ -918,15 +783,14 @@ def build_buy_embed(trade_result):
             {"name": "持倉", "value": f"{summary['positions_count']}/{MAX_POSITIONS} 檔", "inline": True},
         ],
         "footer": {
-            "text": f"紙上交易 | 總資產 ${summary['total_value']:,.0f} | {now.strftime('%H:%M')}"
+            "text": f"Gemini 紙上交易 | 總資產 ${summary['total_value']:,.0f} | {now.strftime('%H:%M')}"
         },
     }
-
     return embed
 
 
-def build_sell_embed(trade_result):
-    """建構賣出通知 Embed"""
+def build_gemini_sell_embed(trade_result):
+    """建構 Gemini 賣出通知 Embed"""
     code = trade_result['stock_code']
     name = trade_result['stock_name']
     price = trade_result['price']
@@ -939,14 +803,13 @@ def build_sell_embed(trade_result):
     tax = trade_result['sell_tax']
     summary = trade_result['portfolio_summary']
 
-    # 損益顏色
     color = COLOR_PROFIT if pnl >= 0 else COLOR_LOSS
     pnl_emoji = '💰' if pnl >= 0 else '💸'
 
     now = datetime.datetime.now()
 
     embed = {
-        "title": f"{'🟢' if pnl >= 0 else '🔴'} AI 賣出 | {code} {name}",
+        "title": f"{'🟢' if pnl >= 0 else '🔴'} Gemini 賣出 | {code} {name}",
         "color": color,
         "fields": [
             {"name": "賣出價", "value": f"**${price:,.1f}**", "inline": True},
@@ -957,84 +820,19 @@ def build_sell_embed(trade_result):
             {"name": "交易成本", "value": f"手續費 ${fee:,.0f} + 稅 ${tax:,.0f}", "inline": True},
         ],
         "footer": {
-            "text": (f"紙上交易 | 持倉 {summary['positions_count']}/{MAX_POSITIONS} | "
+            "text": (f"Gemini 紙上交易 | 持倉 {summary['positions_count']}/{MAX_POSITIONS} | "
                      f"總資產 ${summary['total_value']:,.0f} | "
                      f"累計損益 ${summary['realized_pnl']:+,.0f} | {now.strftime('%H:%M')}")
         },
     }
-
     return embed
 
 
-def build_buy_signal_embed(signal):
-    """建構買點偵測提醒 Embed"""
-    code = signal['stock_code']
-    name = signal['stock_name']
-    price = signal['price']
-    confidence = signal['confidence']
-    bias = signal['bias']
-    reason = signal['reason']
-    can_execute = signal['can_execute']
-    block_reason = signal.get('block_reason', '')
-
-    now = datetime.datetime.now()
-
-    status = '即將買入' if can_execute else f'無法買入（{block_reason}）'
-    status_emoji = '🎯' if can_execute else '⚠️'
-
-    embed = {
-        "title": f"📍 買點偵測 | {code} {name}",
-        "color": COLOR_BULLISH,
-        "fields": [
-            {"name": "現價", "value": f"**${price:,.1f}**", "inline": True},
-            {"name": "信心度", "value": f"**{confidence:.0%}**", "inline": True},
-            {"name": "Bias", "value": f"**{bias:+.1f}**", "inline": True},
-            {"name": "訊號依據", "value": reason[:200], "inline": False},
-            {"name": f"{status_emoji} 狀態", "value": status, "inline": False},
-        ],
-        "footer": {"text": f"紙上交易 | 買點提醒 | {now.strftime('%H:%M')}"},
-    }
-
-    return embed
-
-
-def build_sell_signal_embed(signal):
-    """建構賣點偵測提醒 Embed"""
-    code = signal['stock_code']
-    name = signal['stock_name']
-    price = signal['price']
-    buy_price = signal.get('buy_price', 0)
-    pnl_pct = signal.get('pnl_pct', 0)
-    reason = signal['reason']
-
-    now = datetime.datetime.now()
-
-    # 停利=綠, 停損=紅
-    color = COLOR_PROFIT if pnl_pct >= 0 else COLOR_LOSS
-    pnl_emoji = '💰' if pnl_pct >= 0 else '💸'
-
-    embed = {
-        "title": f"📍 賣點偵測 | {code} {name}",
-        "color": color,
-        "fields": [
-            {"name": "現價", "value": f"**${price:,.1f}**", "inline": True},
-            {"name": "買入價", "value": f"${buy_price:,.1f}", "inline": True},
-            {"name": f"{pnl_emoji} 浮動損益", "value": f"**{pnl_pct:+.1f}%**", "inline": True},
-            {"name": "賣出理由", "value": reason, "inline": False},
-            {"name": "🎯 狀態", "value": "即將賣出", "inline": False},
-        ],
-        "footer": {"text": f"紙上交易 | 賣點提醒 | {now.strftime('%H:%M')}"},
-    }
-
-    return embed
-
-
-def build_daily_portfolio_embed(trader, current_prices=None):
-    """建構每日交易日報 Embed"""
+def build_gemini_daily_portfolio_embed(trader, current_prices=None):
+    """建構 Gemini 每日交易日報 Embed"""
     summary = trader.get_portfolio_summary(current_prices)
     now = datetime.datetime.now()
 
-    # 持倉明細
     if summary['positions_detail']:
         pos_lines = []
         for p in summary['positions_detail']:
@@ -1048,19 +846,17 @@ def build_daily_portfolio_embed(trader, current_prices=None):
     else:
         positions_text = '無持倉'
 
-    # 勝率
     total_trades = summary['total_trades']
     if total_trades > 0:
         win_text = f"{summary['win_rate']:.0%} ({summary['win_count']}勝{summary['loss_count']}敗 / 共{total_trades}筆)"
     else:
         win_text = '尚無交易'
 
-    # 總報酬
     total_return = summary['total_return']
     return_emoji = '🚀' if total_return > 0 else '📉' if total_return < 0 else '➡️'
 
     embed = {
-        "title": f"📊 AI 交易日報 | {now.strftime('%Y/%m/%d')}",
+        "title": f"💎 Gemini 交易日報 | {now.strftime('%Y/%m/%d')}",
         "color": COLOR_INFO,
         "fields": [
             {"name": "持倉明細", "value": positions_text, "inline": False},
@@ -1073,127 +869,52 @@ def build_daily_portfolio_embed(trader, current_prices=None):
             {"name": "勝率", "value": win_text, "inline": True},
         ],
         "footer": {
-            "text": f"紙上交易系統 | 初始資金 ${trader.initial_capital:,.0f} | {now.strftime('%H:%M')}"
+            "text": f"Gemini 紙上交易 | 初始資金 ${trader.initial_capital:,.0f} | {now.strftime('%H:%M')}"
         },
     }
-
     return embed
 
 
-# ─── 測試 ───
+def build_pk_scoreboard_embed(gpt_summary, gemini_summary):
+    """建構 GPT vs Gemini PK 計分板 Embed"""
+    now = datetime.datetime.now()
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("AI 紙上交易引擎 — 測試")
-    print("=" * 60)
+    gpt_return = gpt_summary['total_return']
+    gemini_return = gemini_summary['total_return']
 
-    trader = AITrader(initial_capital=1_000_000)
-    print(f"\n初始資金: ${trader.cash:,.0f}")
-    print(f"持倉: {len(trader.positions)} 檔")
+    if gpt_return > gemini_return:
+        winner = "🤖 GPT 領先"
+        winner_color = 0x10A37F  # OpenAI green
+    elif gemini_return > gpt_return:
+        winner = "💎 Gemini 領先"
+        winner_color = 0x4285F4  # Google blue
+    else:
+        winner = "🤝 平手"
+        winner_color = COLOR_INFO
 
-    # 模擬買入
-    pred_buy = {
-        'direction': '漲',
-        'confidence': 0.78,
-        'bias': 4.2,
-        'signals': {
-            'foreign': '外資大買 +5200 張',
-            'momentum': '5日動量 +2.3%',
-            'ema': '多頭排列',
+    gpt_wr = f"{gpt_summary['win_rate']:.0%}" if gpt_summary['total_trades'] > 0 else "N/A"
+    gem_wr = f"{gemini_summary['win_rate']:.0%}" if gemini_summary['total_trades'] > 0 else "N/A"
+
+    embed = {
+        "title": f"⚔️ GPT vs Gemini PK | {now.strftime('%Y/%m/%d')}",
+        "color": winner_color,
+        "fields": [
+            {"name": "🤖 GPT 總資產", "value": f"${gpt_summary['total_value']:,.0f}", "inline": True},
+            {"name": "💎 Gemini 總資產", "value": f"${gemini_summary['total_value']:,.0f}", "inline": True},
+            {"name": "🏆 領先", "value": winner, "inline": True},
+            {"name": "🤖 GPT 報酬",
+             "value": f"${gpt_return:+,.0f} ({gpt_summary['total_return_pct']:+.1f}%)", "inline": True},
+            {"name": "💎 Gemini 報酬",
+             "value": f"${gemini_return:+,.0f} ({gemini_summary['total_return_pct']:+.1f}%)", "inline": True},
+            {"name": "差距",
+             "value": f"${abs(gpt_return - gemini_return):,.0f}", "inline": True},
+            {"name": "🤖 GPT 勝率", "value": f"{gpt_wr} ({gpt_summary['total_trades']}筆)", "inline": True},
+            {"name": "💎 Gemini 勝率", "value": f"{gem_wr} ({gemini_summary['total_trades']}筆)", "inline": True},
+            {"name": "🤖 GPT 持倉", "value": f"{gpt_summary['positions_count']}/{MAX_POSITIONS}", "inline": True},
+            {"name": "💎 Gemini 持倉", "value": f"{gemini_summary['positions_count']}/{MAX_POSITIONS}", "inline": True},
+        ],
+        "footer": {
+            "text": f"AI PK 紙上交易 | 初始資金各 $1,000,000 | {now.strftime('%H:%M')}"
         },
-        'warnings': [],
-        'predicted_price': 108.0,
     }
-
-    result = trader.evaluate_and_trade('8299', '群聯', 105.5, pred_buy)
-    if result:
-        print(f"\n{result['action'].upper()}: {result['stock_name']}")
-        print(f"  價格: ${result['price']:.1f}")
-        print(f"  股數: {result['shares']}")
-        print(f"  金額: ${result['amount']:,.0f}")
-        print(f"  理由: {result['reason']}")
-
-    # 模擬第二檔買入
-    pred_buy2 = {
-        'direction': '漲',
-        'confidence': 0.72,
-        'bias': 3.5,
-        'signals': {
-            'foreign': '外資買超 +1200 張',
-            'momentum': '5日動量 +1.5%',
-            'ema': '短多排列',
-        },
-        'warnings': [],
-    }
-    result2 = trader.evaluate_and_trade('3189', '景碩', 210.0, pred_buy2)
-    if result2:
-        print(f"\n{result2['action'].upper()}: {result2['stock_name']}")
-        print(f"  價格: ${result2['price']:.1f}")
-        print(f"  股數: {result2['shares']}")
-
-    # 顯示組合
-    summary = trader.get_portfolio_summary()
-    print(f"\n--- 投資組合 ---")
-    print(f"現金: ${summary['cash']:,.0f}")
-    print(f"持倉: {summary['positions_count']}/{MAX_POSITIONS} 檔")
-    print(f"總資產: ${summary['total_value']:,.0f}")
-
-    # 模擬停利
-    pred_sell = {
-        'direction': '漲',
-        'confidence': 0.75,
-        'bias': 3.0,
-        'signals': {},
-        'warnings': [],
-    }
-    sell_result = trader.evaluate_and_trade('8299', '群聯', 111.0, pred_sell)  # +5.2%
-    if sell_result:
-        print(f"\n{sell_result['action'].upper()}: {sell_result['stock_name']}")
-        print(f"  價格: ${sell_result['price']:.1f}")
-        print(f"  損益: ${sell_result['realized_pnl']:+,.0f} ({sell_result['pnl_pct']:+.1f}%)")
-        print(f"  理由: {sell_result['reason']}")
-
-    # 最終組合
-    summary = trader.get_portfolio_summary()
-    print(f"\n--- 最終組合 ---")
-    print(f"現金: ${summary['cash']:,.0f}")
-    print(f"持倉: {summary['positions_count']} 檔")
-    print(f"總資產: ${summary['total_value']:,.0f}")
-    print(f"累計損益: ${summary['realized_pnl']:+,.0f}")
-    print(f"勝率: {summary['win_rate']:.0%}")
-
-    # 測試發送 Discord Embed
-    print("\n--- 測試 Discord Embed ---")
-    try:
-        from notifier import send_discord_embed
-
-        # 模擬一次買入 embed
-        test_trade = {
-            'action': 'buy',
-            'stock_code': '2330',
-            'stock_name': '台積電',
-            'price': 1780.0,
-            'shares': 112,
-            'lots': 0,
-            'odd_shares': 112,
-            'amount': 199654,
-            'broker_fee': 284,
-            'reason': '外資大買 +5200 張 | 5日動量 +2.3% | 多頭排列',
-            'portfolio_summary': summary,
-        }
-        embed = build_buy_embed(test_trade)
-        send_discord_embed(embed, channel='test')
-        print("買入 Embed 已發送到 test channel")
-
-        # 每日日報
-        portfolio_embed = build_daily_portfolio_embed(trader)
-        send_discord_embed(portfolio_embed, channel='test')
-        print("日報 Embed 已發送到 test channel")
-
-    except Exception as e:
-        print(f"Discord 發送失敗: {e}")
-
-    # 清理測試資料
-    if os.path.exists(PORTFOLIO_FILE):
-        os.remove(PORTFOLIO_FILE)
-        print("\n已清理測試 portfolio 檔案")
+    return embed

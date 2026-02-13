@@ -283,6 +283,242 @@ def calc_volume_signal(history, lookback=20):
     return volume_ratio, price_change
 
 
+def calc_macd(prices, fast=12, slow=26, signal=9):
+    """計算 MACD (DIF, MACD Signal, Histogram)"""
+    if len(prices) < slow + signal:
+        return 0, 0, 0
+
+    ema_fast = prices[0]
+    ema_slow = prices[0]
+    mult_fast = 2 / (fast + 1)
+    mult_slow = 2 / (slow + 1)
+
+    dif_values = []
+    for p in prices[1:]:
+        ema_fast = (p - ema_fast) * mult_fast + ema_fast
+        ema_slow = (p - ema_slow) * mult_slow + ema_slow
+        dif_values.append(ema_fast - ema_slow)
+
+    if len(dif_values) < signal:
+        return dif_values[-1] if dif_values else 0, 0, 0
+
+    # Signal line (EMA of DIF)
+    macd_signal = dif_values[-signal]
+    mult_signal = 2 / (signal + 1)
+    for d in dif_values[-signal + 1:]:
+        macd_signal = (d - macd_signal) * mult_signal + macd_signal
+
+    dif = dif_values[-1]
+    histogram = dif - macd_signal
+
+    return dif, macd_signal, histogram
+
+
+def calc_kd(history, period=9):
+    """計算 KD 指標 (K, D)"""
+    if len(history) < period:
+        return 50, 50
+
+    k_prev = 50
+    d_prev = 50
+
+    for i in range(period - 1, len(history)):
+        window = history[i - period + 1:i + 1]
+        highest = max(d['high'] for d in window)
+        lowest = min(d['low'] for d in window)
+        close = window[-1]['close']
+
+        if highest == lowest:
+            rsv = 50
+        else:
+            rsv = (close - lowest) / (highest - lowest) * 100
+
+        k = k_prev * 2 / 3 + rsv / 3
+        d = d_prev * 2 / 3 + k / 3
+        k_prev = k
+        d_prev = d
+
+    return round(k, 1), round(d, 1)
+
+
+def calc_bollinger(prices, period=20, num_std=2):
+    """計算布林通道 (上軌, 中軌, 下軌)"""
+    if len(prices) < period:
+        return 0, 0, 0
+
+    recent = prices[-period:]
+    middle = sum(recent) / period
+    std = np.std(recent)
+
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+
+    return round(upper, 2), round(middle, 2), round(lower, 2)
+
+
+def calc_support_resistance(history, lookback=20):
+    """
+    計算近期支撐與壓力位（用近 N 日的高低點）
+
+    Returns:
+        dict: {'support': float, 'resistance': float,
+               'support2': float, 'resistance2': float}
+    """
+    if len(history) < lookback:
+        lookback = len(history)
+    if lookback < 3:
+        return {'support': 0, 'resistance': 0, 'support2': 0, 'resistance2': 0}
+
+    recent = history[-lookback:]
+    highs = sorted([d['high'] for d in recent], reverse=True)
+    lows = sorted([d['low'] for d in recent])
+
+    return {
+        'resistance': highs[0],                                  # 最高點
+        'resistance2': highs[min(2, len(highs) - 1)],           # 次高
+        'support': lows[0],                                       # 最低點
+        'support2': lows[min(2, len(lows) - 1)],                # 次低
+    }
+
+
+def build_ta_report(stock_code, stock_name, history, institutional_data, market_signal=None):
+    """
+    為單一股票建立完整的技術分析報告（餵給 GPT-4o）
+
+    Returns:
+        str: 格式化的 TA 報告
+    """
+    if not history or len(history) < 5:
+        return f"{stock_code} {stock_name}: 資料不足"
+
+    closes = [d['close'] for d in history]
+    current = closes[-1]
+
+    # K 線數據（最近 10 天）
+    kline_lines = []
+    for d in history[-10:]:
+        change = ""
+        idx = history.index(d)
+        if idx > 0:
+            prev_close = history[idx - 1]['close']
+            chg_pct = (d['close'] - prev_close) / prev_close * 100
+            change = f" {chg_pct:+.1f}%"
+            body = "陽線" if d['close'] > d['open'] else "陰線" if d['close'] < d['open'] else "十字"
+            upper_shadow = d['high'] - max(d['open'], d['close'])
+            lower_shadow = min(d['open'], d['close']) - d['low']
+            body_size = abs(d['close'] - d['open'])
+            # 簡易 K 棒型態
+            pattern = ""
+            if body_size > 0 and upper_shadow > body_size * 2:
+                pattern = " [上影線長]"
+            elif body_size > 0 and lower_shadow > body_size * 2:
+                pattern = " [下影線長]"
+            elif body_size < (d['high'] - d['low']) * 0.1:
+                pattern = " [十字星]"
+        else:
+            body = ""
+            pattern = ""
+        vol_k = d['volume'] / 1000
+        kline_lines.append(
+            f"  {d['date']}: O{d['open']:.1f} H{d['high']:.1f} L{d['low']:.1f} C{d['close']:.1f} "
+            f"V{vol_k:.0f}K{change} {body}{pattern}"
+        )
+    kline_str = '\n'.join(kline_lines)
+
+    # EMA
+    ema5 = calc_ema(closes, 5)
+    ema10 = calc_ema(closes, 10)
+    ema20 = calc_ema(closes, 20) if len(closes) >= 20 else 0
+
+    if ema20 > 0 and current > ema5 > ema10 > ema20:
+        ema_status = "多頭排列 ↑"
+    elif ema20 > 0 and current < ema5 < ema10 < ema20:
+        ema_status = "空頭排列 ↓"
+    elif current > ema5 > ema10:
+        ema_status = "短多"
+    elif current < ema5 < ema10:
+        ema_status = "短空"
+    else:
+        ema_status = "糾結"
+
+    # RSI
+    rsi = calc_rsi(closes)
+    rsi_status = "超買" if rsi > 70 else "偏多" if rsi > 50 else "超賣" if rsi < 30 else "偏空"
+
+    # MACD
+    dif, macd_sig, histogram = calc_macd(closes)
+    macd_status = "多方" if histogram > 0 else "空方"
+    macd_cross = ""
+    if len(closes) > 27:
+        prev_closes = closes[:-1]
+        prev_dif, prev_sig, prev_hist = calc_macd(prev_closes)
+        if prev_hist <= 0 < histogram:
+            macd_cross = " [金叉!]"
+        elif prev_hist >= 0 > histogram:
+            macd_cross = " [死叉!]"
+
+    # KD
+    k, d = calc_kd(history)
+    kd_status = "超買" if k > 80 else "偏多" if k > 50 else "超賣" if k < 20 else "偏空"
+    kd_cross = ""
+    if len(history) > 10:
+        prev_k, prev_d = calc_kd(history[:-1])
+        if prev_k <= prev_d and k > d:
+            kd_cross = " [K上穿D!]"
+        elif prev_k >= prev_d and k < d:
+            kd_cross = " [K下穿D!]"
+
+    # 布林通道
+    bb_upper, bb_middle, bb_lower = calc_bollinger(closes)
+    if bb_upper > 0:
+        bb_width = (bb_upper - bb_lower) / bb_middle * 100
+        if current >= bb_upper:
+            bb_status = f"觸及上軌（可能過熱）"
+        elif current <= bb_lower:
+            bb_status = f"觸及下軌（可能超跌）"
+        else:
+            bb_pos = (current - bb_lower) / (bb_upper - bb_lower) * 100
+            bb_status = f"通道內 {bb_pos:.0f}%位置"
+    else:
+        bb_width = 0
+        bb_status = "資料不足"
+
+    # 支撐壓力
+    sr = calc_support_resistance(history)
+
+    # 動量
+    mom5 = calc_momentum(closes, 5)
+    mom10 = calc_momentum(closes, 10) if len(closes) >= 10 else 0
+
+    # 成交量
+    vol_ratio, _ = calc_volume_signal(history)
+
+    # 法人
+    inst = institutional_data.get(stock_code, {})
+    foreign = inst.get('foreign', 0)
+    invest = inst.get('investment', 0)
+    dealer = inst.get('dealer', 0)
+
+    report = f"""【{stock_code} {stock_name}】現價 ${current:.1f}
+--- K線（近10日）---
+{kline_str}
+--- 技術指標 ---
+  EMA: 5日={ema5:.1f} 10日={ema10:.1f} 20日={ema20:.1f} → {ema_status}
+  RSI(14): {rsi:.1f} ({rsi_status})
+  MACD: DIF={dif:.2f} Signal={macd_sig:.2f} Histogram={histogram:.2f} → {macd_status}{macd_cross}
+  KD(9): K={k:.1f} D={d:.1f} ({kd_status}){kd_cross}
+  布林(20,2): 上{bb_upper:.1f} 中{bb_middle:.1f} 下{bb_lower:.1f} → {bb_status} 寬度{bb_width:.1f}%
+  動量: 5日{mom5:+.1f}% 10日{mom10:+.1f}%
+  量比: {vol_ratio:.1f}x（{"放量" if vol_ratio > 1.5 else "縮量" if vol_ratio < 0.5 else "正常"}）
+--- 支撐壓力 ---
+  壓力: ${sr['resistance']:.1f} / ${sr['resistance2']:.1f}
+  支撐: ${sr['support']:.1f} / ${sr['support2']:.1f}
+--- 法人 ---
+  外資: {foreign:+d}張 投信: {invest:+d}張 自營: {dealer:+d}張"""
+
+    return report
+
+
 # ============================================================
 # 大盤/美股訊號
 # ============================================================
@@ -616,16 +852,20 @@ def calc_directional_bias(stock_code, institutional_data, history, weights=None,
 class DirectionalParticle:
     """方向性粒子"""
 
-    def __init__(self, base_price, bias=0, volatility=2):
+    def __init__(self, base_price, bias=0, volatility=2, use_fat_tail=False, df=3):
         """
         Args:
             base_price: 基準價格
             bias: 方向偏移 (-10 到 +10)
             volatility: 波動率
+            use_fat_tail: 是否使用肥尾分布（焦點股用）
+            df: Student-t 自由度（use_fat_tail=True 時有效）
         """
         self.base_price = base_price
         self.bias = bias
         self.volatility = volatility
+        self.use_fat_tail = use_fat_tail
+        self.df = df
         self.predicted_price = None
         self.generate()
 
@@ -637,8 +877,13 @@ class DirectionalParticle:
         # σ = volatility% 的基準價格
         sigma = self.base_price * (self.volatility / 100)
 
-        # 高斯隨機偏移
-        offset = random.gauss(mu, sigma)
+        if self.use_fat_tail:
+            # ✅ 肥尾模型（焦點股專用）
+            t_random = np.random.standard_t(self.df)
+            offset = mu + sigma * t_random
+        else:
+            # 高斯隨機偏移（一般股票）
+            offset = random.gauss(mu, sigma)
 
         self.predicted_price = self.base_price + offset
 
@@ -660,7 +905,7 @@ class DirectionalParticleModel:
             self.last_fetch_date = datetime.date.today()
 
     def predict(self, stock_code, stock_name=None, current_price=None,
-                gpt_sentiment=None, market_signal=None):
+                gpt_sentiment=None, market_signal=None, use_fat_tail=False):
         """
         預測股票價格
 
@@ -670,6 +915,7 @@ class DirectionalParticleModel:
             current_price: 當前價格（可選，會自動抓取）
             gpt_sentiment: GPT 情緒結果 dict（可選）
             market_signal: 大盤訊號 dict（可選）
+            use_fat_tail: 是否使用肥尾模型（焦點股專用，慢但精確）
 
         Returns:
             dict: 預測結果
@@ -712,10 +958,11 @@ class DirectionalParticleModel:
         volatility = calc_volatility(closes, 10)
         volatility = max(1, min(5, volatility))  # 限制在 1-5%
 
-        # 生成粒子
+        # 生成粒子（焦點股用肥尾模型）
         particles = []
         for _ in range(self.n_particles):
-            p = DirectionalParticle(current_price, bias, volatility)
+            p = DirectionalParticle(current_price, bias, volatility,
+                                   use_fat_tail=use_fat_tail, df=3)
             particles.append(p.predicted_price)
 
         # 統計預測結果
