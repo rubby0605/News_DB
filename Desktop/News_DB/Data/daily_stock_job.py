@@ -546,11 +546,97 @@ def send_postmarket_analysis():
         except Exception as e:
             logger.error(f"AI 交易日報發送失敗: {e}")
 
+        # 綜合盤後日報（含買賣點、信號效能、績效評分）
+        try:
+            send_comprehensive_report(data, closing_prices)
+        except Exception as e:
+            logger.error(f"綜合盤後日報失敗: {e}")
+
+        # 盤後 PDF 即時曲線報告（標出 AI 買賣點）→ 發送到 test 頻道
+        try:
+            send_intraday_chart_pdf()
+        except Exception as e:
+            logger.error(f"盤後 PDF 報告失敗: {e}")
+
         # 清空預測資料
         PREMARKET_PREDICTIONS = {}
 
     except Exception as e:
         logger.error(f"盤後分析失敗: {e}")
+
+
+def send_intraday_chart_pdf():
+    """盤後產生即時曲線 PDF 並發送到測試頻道"""
+    logger.info("=== 產生盤後即時曲線 PDF ===")
+    from intraday_chart import generate_pdf
+    from notifier import send_discord_file
+
+    today_str = datetime.date.today().strftime('%Y%m%d')
+    pdf_path = generate_pdf(today_str)
+
+    if pdf_path and os.path.exists(pdf_path):
+        date_fmt = datetime.date.today().strftime('%Y/%m/%d')
+        send_discord_file(
+            pdf_path,
+            message=f'📈 {date_fmt} 盤後即時曲線（含 AI 買賣點）',
+            channel=DISCORD_CHANNEL
+        )
+        logger.info(f"盤後 PDF 已發送: {pdf_path}")
+    else:
+        logger.warning("無法產生盤後 PDF")
+
+
+def send_comprehensive_report(closing_data, closing_prices):
+    """
+    綜合盤後日報 — 績效總覽 + AI PK + 焦點股覆盤(含買賣點) + 信號效能
+    """
+    logger.info("=== 產生綜合盤後日報 ===")
+    from daily_report import generate_full_report
+    from notifier import send_discord_embed, send_multi_embed
+
+    # 讀取今日 intraday 資料（供買賣點分析）
+    intraday_df = None
+    try:
+        from merge_intraday import parse_intraday_file
+        today_str = datetime.date.today().strftime('%Y%m%d')
+        intraday_dir = os.path.join(SCRIPT_DIR, 'intraday')
+        intraday_file = os.path.join(intraday_dir, f'{today_str}.txt')
+        if os.path.exists(intraday_file):
+            intraday_df = parse_intraday_file(intraday_file)
+            logger.info(f"載入 {len(intraday_df)} 筆 intraday tick")
+    except Exception as e:
+        logger.warning(f"載入 intraday 資料失敗: {e}")
+
+    msg_array = closing_data.get('msgArray', []) if closing_data else []
+
+    embeds = generate_full_report(
+        focus_stocks=FOCUS_STOCKS,
+        predictions=PREMARKET_PREDICTIONS,
+        closing_data=msg_array,
+        gpt_trader=AI_TRADER,
+        gemini_trader=GEMINI_TRADER,
+        closing_prices=closing_prices,
+        intraday_df=intraday_df,
+    )
+
+    if not embeds:
+        logger.warning("綜合日報沒有產生任何 embed")
+        return
+
+    # Discord 每次最多 10 個 embed，分批送
+    for i in range(0, len(embeds), 10):
+        batch = embeds[i:i+10]
+        try:
+            send_multi_embed(batch, channel=DISCORD_CHANNEL)
+        except Exception:
+            # fallback: 逐個送
+            for embed in batch:
+                try:
+                    send_discord_embed(embed, channel=DISCORD_CHANNEL)
+                except Exception as e:
+                    logger.error(f"送出 embed 失敗: {e}")
+
+    logger.info(f"綜合盤後日報已發送 ({len(embeds)} 個 embed)")
 
 
 def send_daily_metrics_summary():
@@ -729,7 +815,12 @@ def monitor_realtime_prices():
     logger.info("=== 開始即時股價監控 ===")
 
     stock_list_file = STOCK_LIST_FILE
-    db_file = os.path.join(SCRIPT_DIR, 'Data', 'trace_stock_DB.txt')
+
+    # 每日獨立檔案：intraday/YYYYMMDD.txt
+    intraday_dir = os.path.join(SCRIPT_DIR, 'intraday')
+    os.makedirs(intraday_dir, exist_ok=True)
+    today_str = datetime.date.today().strftime('%Y%m%d')
+    db_file = os.path.join(intraday_dir, f'{today_str}.txt')
 
     columns = ['c', 'n', 'z', 'tv', 'v', 'o', 'h', 'l', 'y']
     # ['股票代號','公司簡稱','當盤成交價','當盤成交量','累積成交量','開盤價','最高價','最低價','昨收價']
@@ -748,7 +839,12 @@ def monitor_realtime_prices():
     except Exception:
         clf, vectorizer = None, None
 
+    # 寫入表頭（新檔案才寫）
+    write_header = not os.path.exists(db_file) or os.path.getsize(db_file) == 0
     with open(db_file, 'a', encoding='utf-8') as fi:
+        if write_header:
+            fi.write('code\tname\tprice\ttrade_vol\tcum_vol\topen\thigh\tlow\tyesterday\ttimestamp\n')
+            fi.flush()
         while True:
             now = datetime.datetime.now()
             current_time = now.time()

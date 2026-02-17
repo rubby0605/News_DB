@@ -220,6 +220,53 @@ def send_multi_embed(embeds_list, channel='release'):
     return success
 
 
+def send_discord_file(file_path, message='', channel='release'):
+    """
+    發送檔案（PDF/PNG 等）到 Discord
+
+    Args:
+        file_path: 檔案路徑
+        message: 附帶訊息（可選）
+        channel: 'release' 或 'test'
+
+    Returns:
+        bool: 成功/失敗
+    """
+    webhook_url = _get_webhook_url(channel)
+    if not webhook_url:
+        print("錯誤：尚未設定 Discord Webhook")
+        return False
+
+    if not os.path.exists(file_path):
+        print(f"找不到檔案: {file_path}")
+        return False
+
+    filename = os.path.basename(file_path)
+
+    try:
+        with open(file_path, 'rb') as f:
+            payload = {}
+            if message:
+                payload['content'] = message
+
+            response = requests.post(
+                webhook_url,
+                data=payload,
+                files={'file': (filename, f)}
+            )
+
+        if 200 <= response.status_code < 300:
+            print(f"Discord 檔案已發送: {filename}")
+            return True
+        else:
+            print(f"檔案發送失敗: {response.status_code} {response.text[:200]}")
+            return False
+
+    except Exception as e:
+        print(f"檔案發送錯誤: {e}")
+        return False
+
+
 # ─── 訊號分解格式化 ───
 
 def format_signal_breakdown(signals):
