@@ -1,0 +1,65 @@
+{
+  "params": {
+    "decay_rate": 0.9648,
+    "momentum_weight": 1.9384,
+    "mean_reversion_weight": 0.1,
+    "vol_sensitivity": 1.2176,
+    "particle_spread": 0.3,
+    "lookback_window": 30,
+    "prediction_horizon": 3
+  },
+  "fitness": 0.5504,
+  "updated": "2026-02-18T08:04:45.810863",
+  "ga_history": [
+    {
+      "generation": 1,
+      "best": 0.4135,
+      "avg": 0.3335
+    },
+    {
+      "generation": 2,
+      "best": 0.5068,
+      "avg": 0.3626
+    },
+    {
+      "generation": 3,
+      "best": 0.5064,
+      "avg": 0.3943
+    },
+    {
+      "generation": 4,
+      "best": 0.5106,
+      "avg": 0.4159
+    },
+    {
+      "generation": 5,
+      "best": 0.5219,
+      "avg": 0.4736
+    },
+    {
+      "generation": 6,
+      "best": 0.5226,
+      "avg": 0.49
+    },
+    {
+      "generation": 7,
+      "best": 0.5261,
+      "avg": 0.493
+    },
+    {
+      "generation": 8,
+      "best": 0.5383,
+      "avg": 0.4918
+    },
+    {
+      "generation": 9,
+      "best": 0.5383,
+      "avg": 0.4814
+    },
+    {
+      "generation": 10,
+      "best": 0.5504,
+      "avg": 0.4915
+    }
+  ]
+}
