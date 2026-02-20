@@ -25,6 +25,7 @@ from config import (
     COLOR_PROFIT, COLOR_LOSS,
 )
 from gpt_sentiment import get_client
+from true_particle_trading_model import generate_distribution_chart, load_pdf_params_from_weights
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ def build_performance_report(trade_history, positions):
 
 # ─── GPT Agent 決策 ───
 
-GPT_MODEL = "gpt-4o"
+GPT_MODEL = "gpt-5.2-chat-latest"
 
 
 def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accuracy=None, trade_history=None, ta_reports=None):
@@ -255,21 +256,38 @@ def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accur
 "market_view": "20字以內今日盤勢觀點"}}"""
 
     try:
+        # 生成粒子模擬分布圖給 GPT-4o vision 看
+        pdf_params = load_pdf_params_from_weights()
+        chart_b64 = generate_distribution_chart(all_predictions, pdf_params=pdf_params, n_particles=500)
+
+        system_content = (
+            "你是專業台股技術分析師兼波段交易員。"
+            "你擅長閱讀 K 線、均線、MACD、KD、RSI、布林通道、量價關係。"
+            "你的決策必須基於技術指標的交叉確認，不是直覺。"
+            f"你的績效評分: {perf_score}/100。"
+            f"{'⚠️ 評分偏低！你之前交易太頻繁，現在要更有耐心。' if perf_score < 60 else ''}"
+            "原則：多方確認才進場，趨勢反轉才出場，不確定就不動。只回覆 JSON。"
+        )
+
+        # 組裝 user message：文字 + 分布圖（如果有的話）
+        user_content = [{"type": "text", "text": prompt}]
+        if chart_b64:
+            user_content.append({
+                "type": "text",
+                "text": "以下是粒子模擬的報酬率分布圖（肥尾 PDF），請參考分布形狀判斷風險："
+            })
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{chart_b64}", "detail": "low"}
+            })
+
         response = client.chat.completions.create(
             model=GPT_MODEL,
             messages=[
-                {"role": "system", "content": (
-                    "你是專業台股技術分析師兼波段交易員。"
-                    "你擅長閱讀 K 線、均線、MACD、KD、RSI、布林通道、量價關係。"
-                    "你的決策必須基於技術指標的交叉確認，不是直覺。"
-                    f"你的績效評分: {perf_score}/100。"
-                    f"{'⚠️ 評分偏低！你之前交易太頻繁，現在要更有耐心。' if perf_score < 60 else ''}"
-                    "原則：多方確認才進場，趨勢反轉才出場，不確定就不動。只回覆 JSON。"
-                )},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
             ],
-            temperature=0.3,  # 交易決策要穩定
-            max_tokens=1000,
+            max_completion_tokens=1000,
             response_format={"type": "json_object"},
         )
         text = response.choices[0].message.content

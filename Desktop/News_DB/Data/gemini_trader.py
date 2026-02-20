@@ -17,6 +17,8 @@ import re
 import urllib.request
 import urllib.error
 
+from true_particle_trading_model import generate_distribution_chart, load_pdf_params_from_weights
+
 from config import (
     GEMINI_PORTFOLIO_FILE,
     BROKER_FEE_RATE, SECURITIES_TAX_RATE, LOT_SIZE,
@@ -32,13 +34,14 @@ logger = logging.getLogger(__name__)
 
 # ─── Gemini REST API（不依賴 SDK 版本）───
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.1-pro-preview"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
-def _call_gemini(prompt, system_prompt=""):
+def _call_gemini(prompt, system_prompt="", image_b64=None):
     """
     直接用 REST API 呼叫 Gemini，不依賴 google-generativeai SDK。
+    支援傳入 base64 圖片讓 Gemini vision 分析。
     回傳 Gemini 生成的文字。
     """
     api_key = os.environ.get('GEMINI_API_KEY')
@@ -47,8 +50,19 @@ def _call_gemini(prompt, system_prompt=""):
 
     url = GEMINI_API_URL.format(model=GEMINI_MODEL) + f"?key={api_key}"
 
+    # 組裝 parts：文字 + 可選圖片
+    parts = [{"text": prompt}]
+    if image_b64:
+        parts.append({"text": "以下是粒子模擬的報酬率分布圖（肥尾 PDF），請參考分布形狀判斷風險："})
+        parts.append({
+            "inlineData": {
+                "mimeType": "image/png",
+                "data": image_b64
+            }
+        })
+
     body = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {
             "temperature": 0.3,
             "maxOutputTokens": 2000,
@@ -289,7 +303,11 @@ def ask_gemini_decision(all_predictions, portfolio_summary, positions, recent_ac
             "原則：多方確認才進場，趨勢反轉才出場，不確定就不動。只回覆 JSON。"
         )
 
-        text = _call_gemini(prompt, system_prompt=system_prompt)
+        # 生成粒子模擬分布圖給 Gemini vision 看
+        pdf_params = load_pdf_params_from_weights()
+        chart_b64 = generate_distribution_chart(all_predictions, pdf_params=pdf_params, n_particles=500)
+
+        text = _call_gemini(prompt, system_prompt=system_prompt, image_b64=chart_b64)
 
         # Gemini 有時會用 markdown code block 包 JSON
         json_match = re.search(r'```(?:json)?\s*(.*?)```', text, re.DOTALL)
