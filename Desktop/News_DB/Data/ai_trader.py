@@ -131,7 +131,7 @@ def build_performance_report(trade_history, positions):
 
 # ─── GPT Agent 決策 ───
 
-GPT_MODEL = "gpt-5.2-chat-latest"
+GPT_MODEL = "gpt-4o-mini"
 
 
 def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accuracy=None, trade_history=None, ta_reports=None):
@@ -287,7 +287,8 @@ def ask_gpt_decision(all_predictions, portfolio_summary, positions, recent_accur
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": user_content},
             ],
-            max_completion_tokens=1000,
+            temperature=0.3,
+            max_tokens=1000,
             response_format={"type": "json_object"},
         )
         text = response.choices[0].message.content

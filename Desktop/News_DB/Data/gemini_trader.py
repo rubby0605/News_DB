@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Gemini REST API（不依賴 SDK 版本）───
 
-GEMINI_MODEL = "gemini-3.1-pro-preview"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
