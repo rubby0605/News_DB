@@ -12,14 +12,8 @@ __pycache__/
 logs/
 *.log
 
-# Data files (too large)
-Data/trace_stock_DB.txt
-Data/trace_stock_DB.txt.*
-Data/Data/
-Data/*.zip
-Data/1111/
-Data/1114/
-Data/FreshTrading/
+# Data folder (too large)
+Data/
 
 # Large files
 *.mp3
